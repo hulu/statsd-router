@@ -20,8 +20,14 @@
 #include <string.h>
 #include <stdlib.h>
 #include <netdb.h>
+#include <signal.h>
+#include <time.h>
+#include <stdarg.h>
 
-// TODO logging should be added
+// TODO list
+// need to add ping metrics
+// ping metrics for each statsd-router -> statsd route
+// ping metrics for each statsd
 
 // Size of temporary buffers
 #define BUF_SIZE 8192
@@ -74,9 +80,51 @@ struct config_s {
     // socket for sending data
     // TODO should be moved to static field of flush_downstream()
     int send_fd;
+    // log file related fields
+    char *log_file_name;
+    FILE *log_file;
+    int log_level;
 };
 
 struct config_s config;
+
+// numeric values for log levels
+enum log_level_e {
+    INFO,
+    DEBUG,
+    WARN,
+    ERROR
+};
+
+// and function to convert numeric values into strings
+char *log_level_name(enum log_level_e level) {
+    static char *name[] = { "INFO", "DEBUG", "WARN", "ERROR"};
+    return name[level];
+}
+
+// function to log message
+void log_msg(int level, char *format, ...) {
+    va_list args;
+    FILE *out = stdout;
+    time_t t;
+    struct tm *tinfo;
+    char buffer[BUF_SIZE];
+    int l = 0;
+
+    if (level < config.log_level) {
+        return;
+    }
+    va_start(args, format);
+    if (config.log_file != NULL ) {
+        out = config.log_file;
+    }
+    time(&t);
+    tinfo = localtime(&t);
+    l = strftime(buffer, BUF_SIZE, "%Y-%m-%d %H:%M:%S", tinfo);
+    l += sprintf(buffer + l, " %s ", log_level_name(level));
+    sprintf(buffer + l, format, args);
+    fprintf(out, "%s\n", buffer);
+}
 
 // this function returns number of milliseconds since epoch
 unsigned long long get_ms_since_epoch() {
@@ -91,7 +139,12 @@ unsigned long long get_ms_since_epoch() {
 // this function flushes data to downstream
 int flush_downstream(int k) {
     int failures = 0;
-    int n = sendto(config.send_fd, config.downstream[k].buffer, config.downstream[k].buffer_length, 0, (struct sockaddr *) (config.downstream[k].sa_in_data), sizeof(*config.downstream[k].sa_in_data));
+    int n = sendto(config.send_fd,
+        config.downstream[k].buffer,
+        config.downstream[k].buffer_length,
+        0,
+        (struct sockaddr *) (config.downstream[k].sa_in_data),
+        sizeof(*config.downstream[k].sa_in_data));
     if (n < 0) {
         perror("push_to_downstream: sendto() failed");
         failures++;
@@ -107,18 +160,21 @@ int flush_downstream(int k) {
 
 // this function pushes data to appropriate downstream using metrics name hash
 int push_to_downstream(char *line, unsigned long hash) {
-    // array to store unhealthy downstreams
-    int downstreams_down[config.downstream_num];
-    // initially we think that all downstreams are healthy
-    int downstream_down_length = 0;
-    int i, j, k, n;
-    // we have most config.downstream_num downstreams to cycle through
+    // array to store downstreams for consistent hashing
+    int downstream[config.downstream_num];
+    int i, j, k;
+
+    // array is ordered before reshuffling
     for (i = 0; i < config.downstream_num; i++) {
-        k = hash % (config.downstream_num - downstream_down_length);
-        for (j = 0; j < downstream_down_length; j++) {
-            if (k >= downstreams_down[j]) {
-                k++;
-            }
+        downstream[i] = i;
+    }
+    // we have most config.downstream_num downstreams to cycle through
+    for (i = config.downstream_num; i > 0; i--) {
+        j = hash % i;
+        k = downstream[j];
+        if (j != i - 1) {
+            downstream[j] = downstream[i - 1];
+            downstream[i - 1] = k;
         }
         // k is downstream number for this metric, is it alive?
         if (config.downstream[k].health_fd > 0) {
@@ -137,10 +193,10 @@ int push_to_downstream(char *line, unsigned long hash) {
             config.downstream[k].buffer[config.downstream[k].buffer_length++] = '\n';
             return 0;
         }
-        // downstream is down, let's add it to the list of unhealthy downstreams
-        downstreams_down[downstream_down_length++] = k;
+        // quasi random number sequence, distribution is bad without this trick
+        hash = (hash * 7 + 5) / 3;
     }
-    // all downstreams are down
+    log_msg(ERROR, "all downstreams are dead");
     return 1;
 }
 
@@ -159,7 +215,7 @@ int process_line(char *line) {
     char *colon_ptr = strchr(line, ':');
     // if ':' wasn't found this is not valid statsd metric
     if (colon_ptr == NULL) {
-        printf("process_line: invalid metric %s\n", line);
+        log_msg(ERROR, "process_line: invalid metric %s\n", line);
         return 1;
     }
     push_to_downstream(line, hash(line, (colon_ptr - line)));
@@ -242,7 +298,7 @@ struct sockaddr_in *get_sockaddr_in(char *host, char *port_s) {
     struct hostent *he = gethostbyname(host);
 
     if (port <= 0) {
-        printf("get_sockaddr_in: invalid port %s for host %s\n", port_s, host);
+        fprintf(stderr, "get_sockaddr_in: invalid port %s for host %s\n", port_s, host);
         return NULL;
     }
     if (he == NULL || he->h_addr_list == NULL || (he->h_addr_list)[0] == NULL ) {
@@ -288,7 +344,7 @@ int init_downstream(char *hosts) {
         config.downstream[i].health_fd = -1;
         config.downstream[i].last_flush_time_ms = get_ms_since_epoch();
         if (host == NULL) {
-            printf("init_downstream: null hostname at iteration %d\n", i);
+            fprintf(stderr, "init_downstream: null hostname at iteration %d\n", i);
             return 1;
         }
         next_host = strchr(host, ',');
@@ -297,13 +353,13 @@ int init_downstream(char *hosts) {
         }
         data_port = strchr(host, ':');
         if (data_port == NULL) {
-            printf("init_downstream: no data port for %s\n", host);
+            fprintf(stderr, "init_downstream: no data port for %s\n", host);
             return 1;
         }
         *data_port++ = 0;
         health_port = strchr(data_port, ':');
         if (health_port == NULL) {
-            printf("init_downstream: no health_port for %s\n", host);
+            fprintf(stderr, "init_downstream: no health_port for %s\n", host);
             return 1;
         }
         *health_port++ = 0;
@@ -322,10 +378,11 @@ int init_downstream(char *hosts) {
 
 // function to parse single line from config file
 int process_config_line(char *line) {
-    // valid line should contain = symbol
+    int l = 0;
+    // valid line should contain '=' symbol
     char *value_ptr = strchr(line, '=');
     if (value_ptr == NULL) {
-        printf("process_config_line: bad line in config \"%s\"\n", line);
+        fprintf(stderr, "process_config_line: bad line in config \"%s\"\n", line);
         return 1;
     }
     *value_ptr++ = 0;
@@ -337,13 +394,39 @@ int process_config_line(char *line) {
         config.downstream_health_check_interval = atoi(value_ptr);
         // TODO for now using same value for flush interval, this should be changed
         config.downstream_flush_interval = config.downstream_health_check_interval;
+    } else if (strcmp("log_level", line) == 0) {
+        config.log_level = atoi(value_ptr);
+    } else if (strcmp("log_file_name", line) == 0) {
+        l = strlen(value_ptr) + 1;
+        config.log_file_name = (char *)malloc(l);
+        strcpy(config.log_file_name, value_ptr);
+        *(config.log_file_name + l) = 0;
     } else if (strcmp("downstream", line) == 0) {
         return init_downstream(value_ptr);
     } else {
-        printf("process_config_line: unknown parameter \"%s\"\n", line);
+        fprintf(stderr, "process_config_line: unknown parameter \"%s\"\n", line);
         return 1;
     }
     return 0;
+}
+
+int reopen_log() {
+    if (config.log_file != NULL) {
+        fclose(config.log_file);
+    }
+    if (config.log_file_name != NULL) {
+        config.log_file = fopen(config.log_file_name, "a");
+        if (config.log_file == NULL) {
+            perror("reopen_log: fopen() failed");
+            return 1;
+        }
+    }
+    return 0;
+}
+
+// this function is called if SIGHUP is recieved
+void on_sighup(int sig) {
+    reopen_log();
 }
 
 // this function loads config file and initializes config fields
@@ -353,6 +436,9 @@ int init_config(char *filename) {
     int failures = 0;
     char *buffer;
 
+    config.log_file_name = NULL;
+    config.log_file = NULL;
+    config.log_level = 0;
     FILE *config_file = fopen(filename, "rt");
     if (config_file == NULL) {
         perror("init_config: fopen() failed");
@@ -361,7 +447,7 @@ int init_config(char *filename) {
     // config file can contain very long lines e.g. to specify downstreams
     // using getline() here since it automatically adjusts buffer
     while (getline(&buffer, &n, config_file) > 0) {
-        if (strlen(buffer) != 0 && buffer[0] != '#') {
+        if (buffer[0] != '\n' && buffer[0] != '#') {
             failures += process_config_line(buffer);
         }
     }
@@ -369,7 +455,10 @@ int init_config(char *filename) {
     free(buffer);
     fclose(config_file);
     if (failures > 0) {
-        printf("init_config: failed to load config file\n");
+        fprintf(stderr, "init_config: failed to load config file\n");
+        return 1;
+    }
+    if (reopen_log() != 0) {
         return 1;
     }
     for (i = 0; i < PORTS_NUM; i++) {
@@ -381,6 +470,10 @@ int init_config(char *filename) {
     config.send_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (config.send_fd < 0) {
         perror("init_config: socket() failed");
+        return 1;
+    }
+    if (signal(SIGHUP, on_sighup) == SIG_ERR) {
+        fprintf(stderr, "init_config: signal() failed\n");
         return 1;
     }
     return 0;
@@ -438,6 +531,7 @@ int run_downstream_health_check() {
     char buffer[BUF_SIZE];
     // health request command for statsd
     char *health_check_request = "health";
+    // TODO probably need to check proper response
     // TODO this is static data, no need to calculate it each time
     int health_check_request_length = strlen(health_check_request);
 
@@ -447,12 +541,10 @@ int run_downstream_health_check() {
             if (config.downstream[i].health_fd < 0) {
                 failures++;
                 mark_downstream_down(i);
-//                perror("socket() failed");
                 continue;
             }
             if (connect(config.downstream[i].health_fd, (struct sockaddr*) (config.downstream[i].sa_in_health), sizeof(*config.downstream[i].sa_in_health)) < 0) {
                 failures++;
-//                perror("connect() failed");
                 mark_downstream_down(i);
                 continue;
             }
@@ -460,14 +552,12 @@ int run_downstream_health_check() {
 	n = send(config.downstream[i].health_fd, health_check_request, health_check_request_length, 0);
         if (n <= 0) {
             failures++;
-//            perror("send() failed");
             mark_downstream_down(i);
             continue;
         }
         n = recv(config.downstream[i].health_fd, buffer, BUF_SIZE, 0);
         if (n <= 0) {
             failures++;
-//            perror("recv() failed");
             mark_downstream_down(i);
             continue;
         }
@@ -514,7 +604,7 @@ void main_loop() {
 
         retval = select(config.max_server_handle + 1, &read_handles, NULL, NULL, &timeout_interval);
         if (retval == -1) {
-            printf("main_loop: select() failed\n");
+            log_msg(ERROR, "main_loop: select() failed");
             //error
         } else if (retval == 0) {
 //            printf("timeout\n");
@@ -538,15 +628,15 @@ void main_loop() {
 // program entry point
 int main(int argc, char **argv) {
     if (argc != 2) {
-        printf("Usage: %s config.file\n", argv[0]);
-        exit(0);
+        fprintf(stderr, "Usage: %s config.file\n", argv[0]);
+        exit(1);
     }
     if (init_config(argv[1]) != 0) {
-        printf("init_config() failed\n");
+        fprintf(stderr, "init_config() failed\n");
         exit(1);
     }
     if (init_sockets() != 0) {
-        printf("init_sockets() failed\n");
+        fprintf(stderr, "init_sockets() failed\n");
         exit(1);
     }
     main_loop();
