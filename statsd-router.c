@@ -591,16 +591,19 @@ int run_downstream_flush(long current_time_ms) {
 // main program loop
 void main_loop() {
     fd_set read_handles;
-    int i, handle;
+    int i;
     struct timeval timeout_interval;
     int retval;
     long last_ds_health_check = 0;
     int max_handle;
+    int alive_downstream[config.downstream_num];
+    int alive_downstream_num;
     // let's set select() timeout to 1/10th of health check interval
     int select_timeout = config.downstream_health_check_interval / 10;
 
     while (1) {
         max_handle = 0;
+        alive_downstream_num = 0;
         long current_time_ms = get_ms_since_epoch();
         run_downstream_flush(current_time_ms);
         if (current_time_ms - last_ds_health_check > config.downstream_health_check_interval) {
@@ -613,12 +616,12 @@ void main_loop() {
             FD_SET(config.server_handle[i], &read_handles);
         }
         for (i = 0; i < config.downstream_num; i++) {
-            handle = 2; // stderr
-            if (config.downstream[i].health_fd > 0) {
-                handle = config.downstream[i].health_fd;
+            if (config.downstream[i].health_fd < 0) {
+                continue;
             }
-            max_handle = MAX(handle, max_handle);
-            FD_SET(handle, &read_handles);
+            max_handle = MAX(config.downstream[i].health_fd, max_handle);
+            FD_SET(config.downstream[i].health_fd, &read_handles);
+            alive_downstream[alive_downstream_num++] = i;
         }
 
         timeout_interval.tv_sec = select_timeout / 1000;
@@ -643,9 +646,9 @@ void main_loop() {
                     }
                 }
             }
-            for (i = 0; i < config.downstream_num; i++) {
-                if (FD_ISSET(config.downstream[i].health_fd, &read_handles)) {
-                    process_health_check_response(i);
+            for (i = 0; i < alive_downstream_num; i++) {
+                if (FD_ISSET(config.downstream[alive_downstream[i]].health_fd, &read_handles)) {
+                    process_health_check_response(alive_downstream[i]);
                 }
             }
         }
