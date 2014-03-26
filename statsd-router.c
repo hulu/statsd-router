@@ -23,6 +23,7 @@
 #include <signal.h>
 #include <time.h>
 #include <stdarg.h>
+#include <sys/param.h>
 
 // TODO list
 // need to add ping metrics
@@ -59,6 +60,8 @@ struct downstream_s {
     struct sockaddr_in *sa_in_health;
     // when we flushed data last time
     long last_flush_time_ms;
+    // flag, that is unset before sending health request and set after receiving response
+    int last_health_check_ok;
 };
 
 // globally accessed structure with commonly used data
@@ -223,7 +226,8 @@ int process_line(char *line) {
 }
 
 // function to process data we've got via udp
-int process_data(int server_handle, struct sockaddr_in client_address) {
+int process_data(int server_handle) {
+    struct sockaddr_in client_address;
     socklen_t client_length;
     char buffer[BUF_SIZE];
     int bytes_received;
@@ -262,7 +266,8 @@ int process_data(int server_handle, struct sockaddr_in client_address) {
 // function to process health check requests
 // this tcp echo server: we return back request
 // TODO may be we can return some useful information
-int process_health_check(int server_handle, struct sockaddr_in client_address) {
+int process_health_check_request(int server_handle) {
+    struct sockaddr_in client_address;
     socklen_t client_length;
     int childfd;
     char buffer[BUF_SIZE];
@@ -343,6 +348,7 @@ int init_downstream(char *hosts) {
         config.downstream[i].buffer[0] = 0;
         config.downstream[i].health_fd = -1;
         config.downstream[i].last_flush_time_ms = get_ms_since_epoch();
+        config.downstream[i].last_health_check_ok = 0;
         if (host == NULL) {
             fprintf(stderr, "init_downstream: null hostname at iteration %d\n", i);
             return 1;
@@ -464,7 +470,6 @@ int init_config(char *filename) {
     for (i = 0; i < PORTS_NUM; i++) {
         config.server_handle[i] = 0;
     }
-    config.max_server_handle = 0;
     // TODO this socket is used to send data
     // it should be moved to static variable in flush_downstream() function
     config.send_fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -491,9 +496,6 @@ int init_sockets() {
             return 1;
         }
 
-        if (config.server_handle[i] > config.max_server_handle)
-            config.max_server_handle = config.server_handle[i];
-
         memset( &server_address[i], 0, sizeof( server_address[i] ) );
         server_address[i].sin_family = AF_INET;
         server_address[i].sin_addr.s_addr = htonl(INADDR_ANY);
@@ -503,7 +505,7 @@ int init_sockets() {
             perror("init_sockets: bind() failed");
             return 1;
         }
-
+        // TODO this code should be improved
         if (type[i] == SOCK_STREAM && listen(config.server_handle[i], 5) < 0) { /* allow 5 requests to queue up */ 
             perror("init_sockets: listen() failed");
             return 1;
@@ -528,14 +530,16 @@ void mark_downstream_down(int i) {
 int run_downstream_health_check() {
     int i, n;
     int failures = 0;
-    char buffer[BUF_SIZE];
     // health request command for statsd
     char *health_check_request = "health";
-    // TODO probably need to check proper response
-    // TODO this is static data, no need to calculate it each time
     int health_check_request_length = strlen(health_check_request);
 
     for (i = 0; i < config.downstream_num; i++) {
+        if (config.downstream[i].last_health_check_ok == 0 && config.downstream[i].health_fd > 0) {
+            close(config.downstream[i].health_fd);
+            config.downstream[i].health_fd = -1;
+        }
+        config.downstream[i].last_health_check_ok = 0;
         if (config.downstream[i].health_fd < 0) {
             config.downstream[i].health_fd = socket(AF_INET, SOCK_STREAM, 0);
             if (config.downstream[i].health_fd < 0) {
@@ -555,14 +559,21 @@ int run_downstream_health_check() {
             mark_downstream_down(i);
             continue;
         }
-        n = recv(config.downstream[i].health_fd, buffer, BUF_SIZE, 0);
-        if (n <= 0) {
-            failures++;
-            mark_downstream_down(i);
-            continue;
-        }
     }
     return failures;
+}
+
+int process_health_check_response(int downstream_index) {
+    // TODO probably need to check proper response
+    // TODO this is static data, no need to calculate it each time
+    char buffer[BUF_SIZE];
+    int n = recv(config.downstream[downstream_index].health_fd, buffer, BUF_SIZE, 0);
+    if (n <= 0) {
+        mark_downstream_down(downstream_index);
+        return 1;
+    }
+    config.downstream[downstream_index].last_health_check_ok = 1;
+    return 0;
 }
 
 // this function flushes downstreams based on flush interval
@@ -580,15 +591,16 @@ int run_downstream_flush(long current_time_ms) {
 // main program loop
 void main_loop() {
     fd_set read_handles;
-    int i;
+    int i, handle;
     struct timeval timeout_interval;
     int retval;
-    struct sockaddr_in client_address[PORTS_NUM];
     long last_ds_health_check = 0;
+    int max_handle;
     // let's set select() timeout to 1/10th of health check interval
     int select_timeout = config.downstream_health_check_interval / 10;
 
     while (1) {
+        max_handle = 0;
         long current_time_ms = get_ms_since_epoch();
         run_downstream_flush(current_time_ms);
         if (current_time_ms - last_ds_health_check > config.downstream_health_check_interval) {
@@ -596,29 +608,44 @@ void main_loop() {
             last_ds_health_check = current_time_ms;
         }
         FD_ZERO(&read_handles);
-        for (i = 0; i < PORTS_NUM; i++)
+        for (i = 0; i < PORTS_NUM; i++) {
+            max_handle = MAX(config.server_handle[i], max_handle);
             FD_SET(config.server_handle[i], &read_handles);
+        }
+        for (i = 0; i < config.downstream_num; i++) {
+            handle = 2; // stderr
+            if (config.downstream[i].health_fd > 0) {
+                handle = config.downstream[i].health_fd;
+            }
+            max_handle = MAX(handle, max_handle);
+            FD_SET(handle, &read_handles);
+        }
 
         timeout_interval.tv_sec = select_timeout / 1000;
         timeout_interval.tv_usec = (select_timeout % 1000) * 1000;
 
-        retval = select(config.max_server_handle + 1, &read_handles, NULL, NULL, &timeout_interval);
+        retval = select(max_handle + 1, &read_handles, NULL, NULL, &timeout_interval);
         if (retval == -1) {
             log_msg(ERROR, "main_loop: select() failed");
-            //error
         } else if (retval == 0) {
 //            printf("timeout\n");
         } else {
             //good
             for (i = 0; i < PORTS_NUM; i++) {
                 if (FD_ISSET(config.server_handle[i], &read_handles)) {
-                    // TODO this code should be improved
-                    if (type[i] == SOCK_DGRAM) {
-                        process_data(config.server_handle[i], client_address[i]);
+                    switch(i) {
+                        case DATA_PORT_INDEX:
+                            process_data(config.server_handle[i]);
+                            break;
+                        case HEALTH_PORT_INDEX:
+                            process_health_check_request(config.server_handle[i]);
+                            break;
                     }
-                    if (type[i] == SOCK_STREAM) {
-                        process_health_check(config.server_handle[i], client_address[i]);
-                    }
+                }
+            }
+            for (i = 0; i < config.downstream_num; i++) {
+                if (FD_ISSET(config.downstream[i].health_fd, &read_handles)) {
+                    process_health_check_response(i);
                 }
             }
         }
