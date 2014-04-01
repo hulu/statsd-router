@@ -203,7 +203,7 @@ int push_to_downstream(char *line, unsigned long hash, int length) {
                 ds_schedule_flush(ds);
             }
             // let's add new data to buffer
-            strncpy(ds->active_buffer + ds->active_buffer_length, line, length);
+            memcpy(ds->active_buffer + ds->active_buffer_length, line, length);
             // update buffer length
             ds->active_buffer_length += length;
             return 0;
@@ -240,7 +240,7 @@ int process_data_line(char *line, int length) {
 
 void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     char buffer[DATA_BUF_SIZE];
-    ssize_t read;
+    ssize_t bytes_in_buffer;
     int i;
     char *buffer_ptr = buffer;
     char *delimiter_ptr = buffer;
@@ -251,22 +251,16 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
         return;
     }
 
-    read = recv(watcher->fd, buffer, DATA_BUF_SIZE - 1, 0);
+    bytes_in_buffer = recv(watcher->fd, buffer, DATA_BUF_SIZE - 1, 0);
 
-    if (read < 0) {
+    if (bytes_in_buffer < 0) {
         perror("udp_read_cb: read() failed");
         return;
     }
 
-    if (read > 0) {
-        buffer[read++] = '\n';
-        for (i = 0; i < read; i++) {
-            // we loop through recieved data using new lines as delimiters
-            if (buffer[i] != '\n') {
-                continue;
-            }
-            buffer_ptr = delimiter_ptr;
-            delimiter_ptr = buffer + i;
+    if (bytes_in_buffer > 0) {
+        buffer[bytes_in_buffer++] = '\n';
+        while ((delimiter_ptr = memchr(buffer_ptr, '\n', bytes_in_buffer)) != NULL) {
             line_length = delimiter_ptr - buffer_ptr;
             // minimum metrics line should look like X:1|c
             // so lines with length less than 5 can be ignored
@@ -275,7 +269,8 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
                 process_data_line(buffer_ptr, line_length);
             }
             // this is not last metric, let's advance line start pointer
-            delimiter_ptr++;
+            buffer_ptr = delimiter_ptr + 1;
+            bytes_in_buffer -= line_length;
         }
     }
 }
