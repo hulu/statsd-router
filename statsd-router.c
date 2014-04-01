@@ -1,3 +1,18 @@
+/*
+ * This is statsd-router: metrics router for statsd cluster.
+ *
+ * Statsd (https://github.com/etsy/statsd/) is a very convenient way for collecting metrics.
+ * Statsd-router can be used to scale statsd. It accepts metrics and routes them across
+ * several statsd instances in such way, that each metric is processed by one and the
+ * same statsd instance. This is done in order not to corrupt data while using graphite
+ * as backend.
+ *
+ * Author: Kirill Timofeev <kvt@hulu.com>
+ *	
+ * Enjoy :-)!	
+ *	
+ */
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -41,10 +56,12 @@ struct health_check_ev_io {
 
 // structure that holds downstream data
 struct downstream_s {
-    // set of 2 buffer lengths: one is active, another ready for flush
-    int buffer_length[2];
-    // pointer to active buffer, can be 0 or 1
-    int active_buffer;
+    // buffer where data is added
+    char *active_buffer;
+    int active_buffer_length;
+    // buffer ready for flush
+    char *flush_buffer;
+    int flush_buffer_length;
     // memory for both active and flush buffer
     char buffer[DOWNSTREAM_BUF_SIZE * 2];
     // sockaddr for data
@@ -79,6 +96,8 @@ struct global_s {
 
 struct global_s global;
 
+// we have this forward declaration here since this callback is using other callback
+// one of them should be declared forward
 void health_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents);
 
 // numeric values for log levels
@@ -117,13 +136,13 @@ void log_msg(int level, char *format, ...) {
     l += sprintf(buffer + l, " %s ", log_level_name(level));
     sprintf(buffer + l, format, args);
     fprintf(out, "%s\n", buffer);
+    va_end(args);
 }
 
 // this function flushes data to downstream
 void ds_flush_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     int id = ((struct ev_io_id *)watcher)->id;
-    int n;
-    int flush_buffer = global.downstream[id].active_buffer ^ 1;
+    int bytes_send;
 
     ev_io_stop(loop, watcher);
     if (EV_ERROR & revents) {
@@ -131,35 +150,37 @@ void ds_flush_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
         return;
     }   
 
-    n = sendto(watcher->fd,
-        global.downstream[id].buffer + flush_buffer * DOWNSTREAM_BUF_SIZE,
-        global.downstream[id].buffer_length[flush_buffer],
+    bytes_send = sendto(watcher->fd,
+        global.downstream[id].flush_buffer,
+        global.downstream[id].flush_buffer_length,
         0,
         (struct sockaddr *) (&global.downstream[id].sa_in_data),
         sizeof(global.downstream[id].sa_in_data));
-    if (n < 0) {
-        perror("flush_downstream: sendto() failed");
+    if (bytes_send < 0) {
+        perror("ds_flush_cb: sendto() failed");
     }
     // update flush time
     global.downstream[id].last_flush_time = ev_now(loop);
 }
 
-// thi function switches active and flush buffers, registers handler to send data when socket would be ready
-void ds_schedule_flush(int i) {
-    struct ev_io *watcher = (struct ev_io *)&global.downstream[i].flush_watcher;
-    global.downstream[i].active_buffer ^= 1;
-    global.downstream[i].buffer_length[global.downstream[i].active_buffer] = 0;
+// this function switches active and flush buffers, registers handler to send data when socket would be ready
+void ds_schedule_flush(struct downstream_s *ds) {
+    char *t = ds->active_buffer;
+    struct ev_io *watcher = (struct ev_io *)&(ds->flush_watcher);
+    ds->active_buffer = ds->flush_buffer;
+    ds->flush_buffer = t;
+    ds->flush_buffer_length = ds->active_buffer_length;
+    ds->active_buffer_length = 0;
     ev_io_init(watcher, ds_flush_cb, watcher->fd, EV_WRITE);
     ev_io_start(ev_default_loop(0), watcher);
 }
 
 // this function pushes data to appropriate downstream using metrics name hash
-int push_to_downstream(char *line, unsigned long hash) {
+int push_to_downstream(char *line, unsigned long hash, int length) {
     // array to store downstreams for consistent hashing
     int downstream[global.downstream_num];
     int i, j, k;
-    char *buffer;
-    int buffer_length;
+    struct downstream_s *ds;
 
     // array is ordered before reshuffling
     for (i = 0; i < global.downstream_num; i++) {
@@ -174,24 +195,17 @@ int push_to_downstream(char *line, unsigned long hash) {
             downstream[i - 1] = k;
         }
         // k is downstream number for this metric, is it alive?
-        if (global.downstream[k].health_watcher.super.fd > 0) {
-            // downstream is alive, calculate new data length
-            j = strlen(line);
+        ds = &(global.downstream[k]);
+        if ((ds->health_watcher).super.fd > 0) {
             // check if we new data would fit in buffer
-            buffer_length = global.downstream[k].buffer_length[global.downstream[k].active_buffer];
-            if (buffer_length + j > DOWNSTREAM_BUF_SIZE) {
+            if (ds->active_buffer_length + length > DOWNSTREAM_BUF_SIZE) {
                 // buffer is full, let's flush data
-                ds_schedule_flush(k);
-                buffer_length = 0;
+                ds_schedule_flush(ds);
             }
             // let's add new data to buffer
-            buffer = global.downstream[k].buffer + DOWNSTREAM_BUF_SIZE * global.downstream[k].active_buffer + buffer_length;
-            strcpy(buffer, line);
+            strncpy(ds->active_buffer + ds->active_buffer_length, line, length);
             // update buffer length
-            buffer_length += j;
-            // and add new line
-            *(buffer + j)  = '\n';
-            global.downstream[k].buffer_length[global.downstream[k].active_buffer] = buffer_length + 1;
+            ds->active_buffer_length += length;
             return 0;
         }
         // quasi random number sequence, distribution is bad without this trick
@@ -212,14 +226,14 @@ unsigned long hash(char *s, int length) {
 }
 
 // function to process single metrics line
-int process_data_line(char *line) {
-    char *colon_ptr = strchr(line, ':');
+int process_data_line(char *line, int length) {
+    char *colon_ptr = memchr(line, ':', length);
     // if ':' wasn't found this is not valid statsd metric
     if (colon_ptr == NULL) {
         log_msg(ERROR, "process_line: invalid metric %s\n", line);
         return 1;
     }
-    push_to_downstream(line, hash(line, (colon_ptr - line)));
+    push_to_downstream(line, hash(line, (colon_ptr - line)), length);
     return 0;
 }
 
@@ -229,14 +243,15 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     ssize_t read;
     int i;
     char *buffer_ptr = buffer;
-    char *delimiter_ptr = NULL;
+    char *delimiter_ptr = buffer;
+    int line_length = 0;
 
     if (EV_ERROR & revents) {
         perror("udp_read_cb: invalid event");
         return;
     }
 
-    read = recv(watcher->fd, buffer, DATA_BUF_SIZE, 0);
+    read = recv(watcher->fd, buffer, DATA_BUF_SIZE - 1, 0);
 
     if (read < 0) {
         perror("udp_read_cb: read() failed");
@@ -244,25 +259,23 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     }
 
     if (read > 0) {
-        buffer[read] = 0;
-        while (1) {
+        buffer[read++] = '\n';
+        for (i = 0; i < read; i++) {
             // we loop through recieved data using new lines as delimiters
-            delimiter_ptr = strchr(buffer_ptr, '\n');
-            if (delimiter_ptr != NULL) {
-                // if new line was found let's insert terminating 0 here
-                *delimiter_ptr = 0;
+            if (buffer[i] != '\n') {
+                continue;
             }
-            // TODO no need in strlen here, just use (delimiter_ptr - buffer_ptr)
-            if (strlen(buffer_ptr) > 0) {
+            buffer_ptr = delimiter_ptr;
+            delimiter_ptr = buffer + i;
+            line_length = delimiter_ptr - buffer_ptr;
+            // minimum metrics line should look like X:1|c
+            // so lines with length less than 5 can be ignored
+            if (line_length > 5) {
                 // if line is not empty let's process it
-                process_data_line(buffer_ptr);
-            }
-            if (delimiter_ptr == NULL) {
-                // if new line wasn't found this was last metric in packet, let's get out of the loop
-                break;
+                process_data_line(buffer_ptr, line_length);
             }
             // this is not last metric, let's advance line start pointer
-            buffer_ptr = ++delimiter_ptr;
+            delimiter_ptr++;
         }
     }
 }
@@ -272,11 +285,13 @@ void ds_flush_timer_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
     int i;
     ev_tstamp now = ev_now(loop);
     struct ev_io *watcher;
+    struct downstream_s *ds;
 
     for (i = 0; i < global.downstream_num; i++) {
-        if (now - global.downstream[i].last_flush_time > global.downstream_flush_interval &&
-                global.downstream[i].buffer_length[global.downstream[i].active_buffer] > 0) {
-            ds_schedule_flush(i);
+        ds = &(global.downstream[i]);
+        if (now - ds->last_flush_time > global.downstream_flush_interval &&
+                ds->active_buffer_length > 0) {
+            ds_schedule_flush(ds);
         }
     }
 }
@@ -318,8 +333,10 @@ int init_downstream(char *hosts) {
     // now let's initialize downstreams
     for (i = 0; i < global.downstream_num; i++) {
         global.downstream[i].last_flush_time = ev_time();
-        global.downstream[i].active_buffer = 0;
-        global.downstream[i].buffer_length[0] = 0;
+        global.downstream[i].active_buffer = global.downstream[i].buffer;
+        global.downstream[i].flush_buffer = global.downstream[i].buffer + DOWNSTREAM_BUF_SIZE;
+        global.downstream[i].active_buffer_length = 0;
+        global.downstream[i].flush_buffer_length = 0;
         global.downstream[i].health_watcher.super.fd = -1;
         global.downstream[i].health_watcher.id = i;
         global.downstream[i].flush_watcher.super.fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);;
@@ -412,6 +429,10 @@ void on_sighup(int sig) {
     reopen_log();
 }
 
+void on_sigint(int sig) {
+    exit(0);
+}
+
 // this function loads config file and initializes config fields
 int init_config(char *filename) {
     int i = 0;
@@ -445,6 +466,10 @@ int init_config(char *filename) {
         return 1;
     }
     if (signal(SIGHUP, on_sighup) == SIG_ERR) {
+        fprintf(stderr, "init_config: signal() failed\n");
+        return 1;
+    }
+    if (signal(SIGINT, on_sigint) == SIG_ERR) {
         fprintf(stderr, "init_config: signal() failed\n");
         return 1;
     }
@@ -542,7 +567,7 @@ void ds_mark_down(struct ev_io *watcher) {
         close(watcher->fd);
         watcher->fd = -1;
     }
-    global.downstream[id].buffer_length[global.downstream[id].active_buffer] = 0;
+    global.downstream[id].active_buffer_length = 0;
 }
 
 void ds_health_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
