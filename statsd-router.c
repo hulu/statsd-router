@@ -261,6 +261,7 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     if (bytes_in_buffer > 0) {
         buffer[bytes_in_buffer++] = '\n';
         while ((delimiter_ptr = memchr(buffer_ptr, '\n', bytes_in_buffer)) != NULL) {
+            delimiter_ptr++;
             line_length = delimiter_ptr - buffer_ptr;
             // minimum metrics line should look like X:1|c
             // so lines with length less than 5 can be ignored
@@ -269,7 +270,7 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
                 process_data_line(buffer_ptr, line_length);
             }
             // this is not last metric, let's advance line start pointer
-            buffer_ptr = delimiter_ptr + 1;
+            buffer_ptr = delimiter_ptr;
             bytes_in_buffer -= line_length;
         }
     }
@@ -647,6 +648,7 @@ int main(int argc, char *argv[]) {
     struct ev_periodic ds_flush_timer_watcher;
     int i;
     int type;
+    int optval;
     ev_tstamp ds_health_check_timer_at = 0.0;
     ev_tstamp ds_flush_timer_at = 0.0;
 
@@ -684,6 +686,8 @@ int main(int argc, char *argv[]) {
 
         switch(i) {
             case HEALTH_PORT_INDEX:
+                optval = 1;
+                setsockopt(sockets[i], SOL_SOCKET, SO_REUSEADDR, &optval, sizeof optval);
                 if (listen(sockets[i], 5) < 0) {
                     perror("main: listen() error");
                     return(1);
