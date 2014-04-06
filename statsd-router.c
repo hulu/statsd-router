@@ -190,10 +190,6 @@ int push_to_downstream(char *line, unsigned long hash, int length) {
     for (i = global.downstream_num; i > 0; i--) {
         j = hash % i;
         k = downstream[j];
-        if (j != i - 1) {
-            downstream[j] = downstream[i - 1];
-            downstream[i - 1] = k;
-        }
         // k is downstream number for this metric, is it alive?
         ds = &(global.downstream[k]);
         if ((ds->health_watcher).super.fd > 0) {
@@ -207,6 +203,10 @@ int push_to_downstream(char *line, unsigned long hash, int length) {
             // update buffer length
             ds->active_buffer_length += length;
             return 0;
+        }
+        if (j != i - 1) {
+            downstream[j] = downstream[i - 1];
+            downstream[i - 1] = k;
         }
         // quasi random number sequence, distribution is bad without this trick
         hash = (hash * 7 + 5) / 3;
