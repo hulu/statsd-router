@@ -23,6 +23,7 @@
 #include <time.h>
 #include <signal.h>
 #include <stdarg.h>
+#include <unistd.h>
 
 #define HEALTHY_DOWNSTREAMS "healthy_downstreams"
 #define PER_DOWNSTREAM_COUNTER_METRIC_SUFFIX "connections:1|c"
@@ -196,7 +197,7 @@ void ds_schedule_flush(struct downstream_s *ds) {
     ev_io_start(ev_default_loop(0), watcher);
 }
 
-push_to_downstream(struct downstream_s *ds, char *line, int length) {
+void push_to_downstream(struct downstream_s *ds, char *line, int length) {
     // check if we new data would fit in buffer
     if (ds->active_buffer_length + length > DOWNSTREAM_BUF_SIZE) {
         // buffer is full, let's flush data
@@ -266,7 +267,6 @@ int process_data_line(char *line, int length) {
 void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     char buffer[DATA_BUF_SIZE];
     ssize_t bytes_in_buffer;
-    int i;
     char *buffer_ptr = buffer;
     char *delimiter_ptr = buffer;
     int line_length = 0;
@@ -305,7 +305,6 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
 void ds_flush_timer_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
     int i;
     ev_tstamp now = ev_now(loop);
-    struct ev_io *watcher;
     struct downstream_s *ds;
 
     for (i = 0; i < global.downstream_num; i++) {
@@ -496,7 +495,6 @@ void on_sigint(int sig) {
 
 // this function loads config file and initializes config fields
 int init_config(char *filename) {
-    int i = 0;
     size_t n = 0;
     int l = 0;
     int failures = 0;
@@ -569,7 +567,6 @@ void health_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     char *buffer = ((struct health_check_ev_io *)watcher)->buffer;
     int buffer_length = ((struct health_check_ev_io *)watcher)->buffer_length;
     ssize_t read;
-    int i;
 
     if (EV_ERROR & revents) {
         perror("health_read_cb: invalid event");
@@ -731,7 +728,6 @@ int main(int argc, char *argv[]) {
     int sockets[PORTS_NUM];
     struct sockaddr_in addr[PORTS_NUM];
     struct ev_io socket_watcher[PORTS_NUM];
-    int port;
     struct ev_periodic ds_health_check_timer_watcher;
     struct ev_periodic ds_flush_timer_watcher;
     struct ev_periodic ping_timer_watcher;
