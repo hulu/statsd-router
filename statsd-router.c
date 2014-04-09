@@ -147,9 +147,9 @@ void log_msg(int level, char *format, ...) {
     tinfo = localtime(&t);
     l = strftime(buffer, LOG_BUF_SIZE, "%Y-%m-%d %H:%M:%S", tinfo);
     l += sprintf(buffer + l, " %s ", log_level_name(level));
-    sprintf(buffer + l, format, args);
-    fprintf(out, "%s\n", buffer);
+    vsprintf(buffer + l, format, args);
     va_end(args);
+    fprintf(out, "%s\n", buffer);
 }
 
 // this function flushes data to downstream
