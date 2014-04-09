@@ -84,6 +84,8 @@ struct downstream_s {
     // statsd-router to statsd connection with data loss
     char per_downstream_counter_metric[METRIC_SIZE];
     int per_downstream_counter_metric_length;
+    // flag to prevent scheduling flush if previous is not completed
+    int flush_in_progress;
 };
 
 // globally accessed structure with commonly used data
@@ -130,7 +132,6 @@ char *log_level_name(enum log_level_e level) {
 // function to log message
 void log_msg(int level, char *format, ...) {
     va_list args;
-    FILE *out = stdout;
     time_t t;
     struct tm *tinfo;
     char buffer[LOG_BUF_SIZE];
@@ -140,16 +141,13 @@ void log_msg(int level, char *format, ...) {
         return;
     }
     va_start(args, format);
-    if (global.log_file != NULL ) {
-        out = global.log_file;
-    }
     time(&t);
     tinfo = localtime(&t);
     l = strftime(buffer, LOG_BUF_SIZE, "%Y-%m-%d %H:%M:%S", tinfo);
     l += sprintf(buffer + l, " %s ", log_level_name(level));
     vsprintf(buffer + l, format, args);
     va_end(args);
-    fprintf(out, "%s\n", buffer);
+    fprintf(global.log_file, "%s\n", buffer);
 }
 
 // this function flushes data to downstream
@@ -157,11 +155,10 @@ void ds_flush_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     int id = ((struct ev_io_id *)watcher)->id;
     int bytes_send;
 
-    ev_io_stop(loop, watcher);
     if (EV_ERROR & revents) {
         perror("udp_read_cb: invalid event");
         return;
-    }   
+    }
 
     bytes_send = sendto(watcher->fd,
         global.downstream[id].flush_buffer,
@@ -169,17 +166,28 @@ void ds_flush_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
         0,
         (struct sockaddr *) (&global.downstream[id].sa_in_data),
         sizeof(global.downstream[id].sa_in_data));
+    // update flush time
+    global.downstream[id].last_flush_time = ev_now(loop);
+    global.downstream[id].flush_in_progress = 0;
+    ev_io_stop(loop, watcher);
     if (bytes_send < 0) {
         perror("ds_flush_cb: sendto() failed");
     }
-    // update flush time
-    global.downstream[id].last_flush_time = ev_now(loop);
 }
 
 // this function switches active and flush buffers, registers handler to send data when socket would be ready
 void ds_schedule_flush(struct downstream_s *ds) {
-    char *t = ds->active_buffer;
-    struct ev_io *watcher = (struct ev_io *)&(ds->flush_watcher);
+    char *t = NULL;
+    struct ev_io *watcher = NULL;
+
+    if (ds->flush_in_progress == 1) {
+        log_msg(ERROR, "Previous flush is not completed, loosing data.");
+        ds->active_buffer_length = 0;
+        return;
+    }
+    ds->flush_in_progress = 1;
+    t = ds->active_buffer;
+    watcher = (struct ev_io *)&(ds->flush_watcher);
     ds->active_buffer = ds->flush_buffer;
     ds->flush_buffer = t;
     ds->flush_buffer_length = ds->active_buffer_length;
@@ -363,6 +371,7 @@ int init_downstream(char *hosts) {
     // now let's initialize downstreams
     for (i = 0; i < global.downstream_num; i++) {
         global.downstream[i].last_flush_time = ev_time();
+        global.downstream[i].flush_in_progress = 0;
         global.downstream[i].active_buffer = global.downstream[i].buffer;
         global.downstream[i].flush_buffer = global.downstream[i].buffer + DOWNSTREAM_BUF_SIZE;
         global.downstream[i].active_buffer_length = 0;
@@ -450,6 +459,7 @@ int process_config_line(char *line) {
             return 1;
         }
         strcpy(global.log_file_name, value_ptr);
+        global.log_file = NULL;
         *(global.log_file_name + l) = 0;
     } else if (strcmp("downstream", line) == 0) {
         return init_downstream(value_ptr);
@@ -461,10 +471,10 @@ int process_config_line(char *line) {
 }
 
 int reopen_log() {
-    if (global.log_file != NULL) {
-        fclose(global.log_file);
-    }
     if (global.log_file_name != NULL) {
+        if (global.log_file != NULL) {
+            fclose(global.log_file);
+        }
         global.log_file = fopen(global.log_file_name, "a");
         if (global.log_file == NULL) {
             perror("reopen_log: fopen() failed");
@@ -480,6 +490,7 @@ void on_sighup(int sig) {
 }
 
 void on_sigint(int sig) {
+    fflush(global.log_file);
     exit(0);
 }
 
@@ -492,7 +503,7 @@ int init_config(char *filename) {
     char *buffer;
 
     global.log_file_name = NULL;
-    global.log_file = NULL;
+    global.log_file = stderr;
     global.log_level = 0;
     FILE *config_file = fopen(filename, "rt");
     if (config_file == NULL) {
@@ -542,8 +553,8 @@ void health_write_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
         return;
     }
 
-    ev_io_stop(loop, watcher);
     n = send(watcher->fd, buffer, buffer_length, 0);
+    ev_io_stop(loop, watcher);
     if (n > 0) {
         ((struct health_check_ev_io *)watcher)->buffer_length = 0;
         ev_io_init(watcher, health_read_cb, watcher->fd, EV_READ);
@@ -565,10 +576,11 @@ void health_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
         return;
     }
 
-    ev_io_stop(loop, watcher);
     read = recv(watcher->fd, (buffer + buffer_length), (HEALTH_CHECK_BUF_SIZE - buffer_length), 0);
+    ev_io_stop(loop, watcher);
     if (read > 0) {
         buffer_length += read;
+        buffer[buffer_length] = 0;
         ((struct health_check_ev_io *)watcher)->buffer_length = buffer_length;
         ev_io_init(watcher, health_write_cb, watcher->fd, EV_WRITE);
         ev_io_start(loop, watcher);
@@ -645,8 +657,8 @@ void ds_health_send_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
     char *health_check_request = "health";
     int health_check_request_length = strlen(health_check_request);
     int health_fd = watcher->fd;
-    ev_io_stop(loop, watcher);
     int n = send(health_fd, health_check_request, health_check_request_length, 0);
+    ev_io_stop(loop, watcher);
     if (n <= 0) {
         perror("ds_health_send_cb: send() failed");
         ds_mark_down(watcher);
@@ -659,16 +671,17 @@ void ds_health_send_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
 void ds_health_connect_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     int health_fd = watcher->fd;
     int err;
-    ev_io_stop(loop, watcher);
+
     socklen_t len = sizeof(err);
     getsockopt(health_fd, SOL_SOCKET, SO_ERROR, &err, &len);
+    ev_io_stop(loop, watcher);
     if (err) {
         ds_mark_down(watcher);
         return;
     } else {
         ev_io_init(watcher, ds_health_send_cb, health_fd, EV_WRITE);
         ev_io_start(loop, watcher);
-    }    
+    }
 }
 
 void ds_health_check_timer_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
@@ -786,7 +799,7 @@ int main(int argc, char *argv[]) {
     ev_periodic_start (loop, &ping_timer_watcher);
 
     ev_loop(loop, 0);
-    fprintf(stderr, "main: ev_loop() exited");
+    log_msg(ERROR, "main: ev_loop() exited");
     return(0);
 }
 
