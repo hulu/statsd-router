@@ -12,6 +12,8 @@ SR_DS_FLUSH_INTERVAL = 2.0
 MONKEY_ACTION_INTERVAL_MIN = 0.1
 MONKEY_ACTION_INTERVAL_MAX = 2.0
 SR_HEALTH_CHECK_REQUEST = "ok"
+SR_DS_PING_INTERVAL = 10.0
+SR_PING_PREFIX = "abacus-test"
 
 HEALTH_CHECK_PROBABILITY = 0.05
 DS_TOGGLE_PROBABILITY = 0.1
@@ -38,6 +40,7 @@ class DataServer < EventMachine::Connection
         puts "*** #{@statsd_mock.num} data start"
         data.split("\n").each do |d|
             puts "*** #{d}"
+            next if d =~ /^#{SR_PING_PREFIX}/
             m = StatsdRouterMonkey.get_message_queue().select {|x| x[:data] == d}.first
             if m == nil
                 puts "!!! Failed to find \"#{d}\" in message queue"
@@ -250,6 +253,8 @@ class StatsdRouterMonkey
                 f.puts("health_port=#{SR_HEALTH_PORT}")
                 f.puts("downstream_health_check_interval=#{SR_DS_HEALTH_CHECK_INTERVAL}")
                 f.puts("downstream_flush_interval=#{SR_DS_FLUSH_INTERVAL}")
+                f.puts("downstream_ping_interval=#{SR_DS_PING_INTERVAL}")
+                f.puts("ping_prefix=#{SR_PING_PREFIX}")
                 f.puts("downstream=#{(0...DOWNSTREAM_NUM).to_a.map {|x| BASE_DS_PORT + 2 * x}.map {|x| "127.0.0.1:#{x}:#{x + 1}"}.join(',')}")
             end
             EventMachine.popen("#{SR_EXE_FILE} #{SR_CONFIG_FILE}", OutputHandler)

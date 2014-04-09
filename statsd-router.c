@@ -24,6 +24,9 @@
 #include <signal.h>
 #include <stdarg.h>
 
+#define HEALTHY_DOWNSTREAMS "healthy_downstreams"
+#define PER_DOWNSTREAM_COUNTER_METRIC_SUFFIX "connections:1|c"
+
 // Size of buffer for outgoing packets. Should be below MTU.
 // TODO Probably should be configured via configuration file?
 #define DOWNSTREAM_BUF_SIZE 1450
@@ -32,6 +35,7 @@
 #define DOWNSTREAM_HEALTH_CHECK_BUF_SIZE 32
 #define HEALTH_CHECK_BUF_SIZE 512
 #define LOG_BUF_SIZE 256
+#define METRIC_SIZE 256
 
 // statsd-router ports are stored in array and accessed using indexies below
 #define DATA_PORT_INDEX 0
@@ -74,6 +78,12 @@ struct downstream_s {
     struct ev_io_id flush_watcher;
     // last time data was flushed to downstream
     ev_tstamp last_flush_time;
+    // each statsd instance during each ping interval
+    // would increment per connection counters
+    // this would allow us to detect metris loss and locate
+    // statsd-router to statsd connection with data loss
+    char per_downstream_counter_metric[METRIC_SIZE];
+    int per_downstream_counter_metric_length;
 };
 
 // globally accessed structure with commonly used data
@@ -92,6 +102,9 @@ struct global_s {
     char *log_file_name;
     FILE *log_file;
     int log_level;
+    // how often we want to send ping metrics
+    ev_tstamp downstream_ping_interval;
+    char alive_downstream_metric_name[METRIC_SIZE];
 };
 
 struct global_s global;
@@ -175,8 +188,20 @@ void ds_schedule_flush(struct downstream_s *ds) {
     ev_io_start(ev_default_loop(0), watcher);
 }
 
+push_to_downstream(struct downstream_s *ds, char *line, int length) {
+    // check if we new data would fit in buffer
+    if (ds->active_buffer_length + length > DOWNSTREAM_BUF_SIZE) {
+        // buffer is full, let's flush data
+        ds_schedule_flush(ds);
+    }
+    // let's add new data to buffer
+    memcpy(ds->active_buffer + ds->active_buffer_length, line, length);
+    // update buffer length
+    ds->active_buffer_length += length;
+}
+
 // this function pushes data to appropriate downstream using metrics name hash
-int push_to_downstream(char *line, unsigned long hash, int length) {
+int find_downstream(char *line, unsigned long hash, int length) {
     // array to store downstreams for consistent hashing
     int downstream[global.downstream_num];
     int i, j, k;
@@ -193,15 +218,7 @@ int push_to_downstream(char *line, unsigned long hash, int length) {
         // k is downstream number for this metric, is it alive?
         ds = &(global.downstream[k]);
         if ((ds->health_watcher).super.fd > 0) {
-            // check if we new data would fit in buffer
-            if (ds->active_buffer_length + length > DOWNSTREAM_BUF_SIZE) {
-                // buffer is full, let's flush data
-                ds_schedule_flush(ds);
-            }
-            // let's add new data to buffer
-            memcpy(ds->active_buffer + ds->active_buffer_length, line, length);
-            // update buffer length
-            ds->active_buffer_length += length;
+            push_to_downstream(ds, line, length);
             return 0;
         }
         if (j != i - 1) {
@@ -233,7 +250,7 @@ int process_data_line(char *line, int length) {
         log_msg(ERROR, "process_line: invalid metric %s\n", line);
         return 1;
     }
-    push_to_downstream(line, hash(line, (colon_ptr - line)), length);
+    find_downstream(line, hash(line, (colon_ptr - line)), length);
     return 0;
 }
 
@@ -308,10 +325,13 @@ void init_sockaddr_in(struct sockaddr_in *sa_in, char *host, char *port) {
 // function to init downstreams from config file line
 int init_downstream(char *hosts) {
     int i = 0;
+    int j = 0;
     char *host = hosts;
     char *next_host = NULL;
     char *data_port = NULL;
     char *health_port = NULL;
+    char per_connection_prefix[METRIC_SIZE];
+    char per_downstream_prefix[METRIC_SIZE];
 
     // argument line has the following format: host1:data_port1:health_port1,host2:data_port2:healt_port2,...
     // number of downstreams is equal to number of commas + 1
@@ -325,6 +345,20 @@ int init_downstream(char *hosts) {
     if (global.downstream == NULL) {
         perror("init_downstream: malloc() failed");
         return 1;
+    }
+    strcpy(per_connection_prefix, global.alive_downstream_metric_name);
+    for (i = strlen(per_connection_prefix); i > 0; i--) {
+        if (per_connection_prefix[i] == '.') {
+            per_connection_prefix[i] = 0;
+            break;
+        }
+    }
+    strcpy(per_downstream_prefix, per_connection_prefix);
+    for (i = strlen(per_downstream_prefix); i > 0; i--) {
+        if (per_downstream_prefix[i] == '.') {
+            per_downstream_prefix[i] = 0;
+            break;
+        }
     }
     // now let's initialize downstreams
     for (i = 0; i < global.downstream_num; i++) {
@@ -363,6 +397,15 @@ int init_downstream(char *hosts) {
         *health_port++ = 0;
         init_sockaddr_in(&global.downstream[i].sa_in_data, host, data_port);
         init_sockaddr_in(&global.downstream[i].sa_in_health, host, health_port);
+        for (j = 0; *(host + j) != 0; j++) {
+            if (*(host + j) == '.') {
+                *(host + j) = '_';
+            }
+        }
+        sprintf(global.downstream[i].per_downstream_counter_metric, "%s-%s-%s.%s\n%s.%s-%s.%s\n",
+            per_connection_prefix, host, data_port, PER_DOWNSTREAM_COUNTER_METRIC_SUFFIX,
+            per_downstream_prefix, host, data_port, PER_DOWNSTREAM_COUNTER_METRIC_SUFFIX);
+        global.downstream[i].per_downstream_counter_metric_length = strlen(global.downstream[i].per_downstream_counter_metric);
         host = next_host;
     }
     return 0;
@@ -370,7 +413,9 @@ int init_downstream(char *hosts) {
 
 // function to parse single line from config file
 int process_config_line(char *line) {
+    char buffer[METRIC_SIZE];
     int l = 0;
+    int n;
     // valid line should contain '=' symbol
     char *value_ptr = strchr(line, '=');
     if (value_ptr == NULL) {
@@ -386,8 +431,17 @@ int process_config_line(char *line) {
         global.downstream_flush_interval = atof(value_ptr);
     } else if (strcmp("downstream_health_check_interval", line) == 0) {
         global.downstream_health_check_interval = atof(value_ptr);
+    } else if (strcmp("downstream_ping_interval", line) == 0) {
+        global.downstream_ping_interval = atof(value_ptr);
     } else if (strcmp("log_level", line) == 0) {
         global.log_level = atoi(value_ptr);
+    } else if (strcmp("ping_prefix", line) == 0) {
+        n = gethostname(buffer, METRIC_SIZE);
+        if (n < 0) {
+            fprintf(stderr, "process_config_line: gethostname() failed\n");
+            return 1;
+        }
+        sprintf(global.alive_downstream_metric_name, "%s.%s-%d.%s", value_ptr, buffer, global.port[DATA_PORT_INDEX], HEALTHY_DOWNSTREAMS);
     } else if (strcmp("log_file_name", line) == 0) {
         l = strlen(value_ptr) + 1;
         global.log_file_name = (char *)malloc(l);
@@ -433,6 +487,7 @@ void on_sigint(int sig) {
 int init_config(char *filename) {
     int i = 0;
     size_t n = 0;
+    int l = 0;
     int failures = 0;
     char *buffer;
 
@@ -446,7 +501,10 @@ int init_config(char *filename) {
     }
     // config file can contain very long lines e.g. to specify downstreams
     // using getline() here since it automatically adjusts buffer
-    while (getline(&buffer, &n, config_file) > 0) {
+    while ((l = getline(&buffer, &n, config_file)) > 0) {
+        if (buffer[l - 1] == '\n') {
+            buffer[l - 1] = 0;
+        }
         if (buffer[0] != '\n' && buffer[0] != '#') {
             failures += process_config_line(buffer);
         }
@@ -637,6 +695,23 @@ void ds_health_check_timer_cb(struct ev_loop *loop, struct ev_io *w, int revents
     }
 }
 
+void ping_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
+    int i = 0;
+    int count = 0;
+    char buffer[METRIC_SIZE];
+    struct downstream_s *ds;
+
+    for (i = 0; i < global.downstream_num; i++) {
+        ds = &global.downstream[i];
+        if ((ds->health_watcher).super.fd > 0) {
+            push_to_downstream(ds, ds->per_downstream_counter_metric, ds->per_downstream_counter_metric_length);
+            count++;
+        }
+    }
+    sprintf(buffer, "%s:%d|c\n", global.alive_downstream_metric_name, count);
+    process_data_line(buffer, strlen(buffer));
+}
+
 // program entry point
 int main(int argc, char *argv[]) {
     struct ev_loop *loop = ev_default_loop(0);
@@ -646,11 +721,13 @@ int main(int argc, char *argv[]) {
     int port;
     struct ev_periodic ds_health_check_timer_watcher;
     struct ev_periodic ds_flush_timer_watcher;
+    struct ev_periodic ping_timer_watcher;
     int i;
     int type;
     int optval;
     ev_tstamp ds_health_check_timer_at = 0.0;
     ev_tstamp ds_flush_timer_at = 0.0;
+    ev_tstamp ping_timer_at = 0.0;
 
    if (argc != 2) {
         fprintf(stderr, "Usage: %s config.file\n", argv[0]);
@@ -705,10 +782,11 @@ int main(int argc, char *argv[]) {
     ev_periodic_start (loop, &ds_health_check_timer_watcher);
     ev_periodic_init (&ds_flush_timer_watcher, ds_flush_timer_cb, ds_flush_timer_at, global.downstream_flush_interval, 0);
     ev_periodic_start (loop, &ds_flush_timer_watcher);
+    ev_periodic_init(&ping_timer_watcher, ping_cb, ping_timer_at, global.downstream_ping_interval, 0);
+    ev_periodic_start (loop, &ping_timer_watcher);
 
-    while (1) {
-        ev_loop(loop, 0);
-    }
+    ev_loop(loop, 0);
+    fprintf(stderr, "main: ev_loop() exited");
     return(0);
 }
 
