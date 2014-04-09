@@ -384,7 +384,7 @@ int init_downstream(char *hosts) {
             return 1;
         }
         if (host == NULL) {
-            fprintf(stderr, "init_downstream: null hostname at iteration %d\n", i);
+            log_msg(ERROR, "init_downstream: null hostname at iteration %d\n", i);
             return 1;
         }
         next_host = strchr(host, ',');
@@ -393,13 +393,13 @@ int init_downstream(char *hosts) {
         }
         data_port = strchr(host, ':');
         if (data_port == NULL) {
-            fprintf(stderr, "init_downstream: no data port for %s\n", host);
+            log_msg(ERROR, "init_downstream: no data port for %s\n", host);
             return 1;
         }
         *data_port++ = 0;
         health_port = strchr(data_port, ':');
         if (health_port == NULL) {
-            fprintf(stderr, "init_downstream: no health_port for %s\n", host);
+            log_msg(ERROR, "init_downstream: no health_port for %s\n", host);
             return 1;
         }
         *health_port++ = 0;
@@ -427,7 +427,7 @@ int process_config_line(char *line) {
     // valid line should contain '=' symbol
     char *value_ptr = strchr(line, '=');
     if (value_ptr == NULL) {
-        fprintf(stderr, "process_config_line: bad line in config \"%s\"\n", line);
+        log_msg(ERROR, "process_config_line: bad line in config \"%s\"\n", line);
         return 1;
     }
     *value_ptr++ = 0;
@@ -446,7 +446,7 @@ int process_config_line(char *line) {
     } else if (strcmp("ping_prefix", line) == 0) {
         n = gethostname(buffer, METRIC_SIZE);
         if (n < 0) {
-            fprintf(stderr, "process_config_line: gethostname() failed\n");
+            log_msg(ERROR, "process_config_line: gethostname() failed\n");
             return 1;
         }
         sprintf(global.alive_downstream_metric_name, "%s.%s-%d.%s", value_ptr, buffer, global.port[DATA_PORT_INDEX], HEALTHY_DOWNSTREAMS);
@@ -463,7 +463,7 @@ int process_config_line(char *line) {
     } else if (strcmp("downstream", line) == 0) {
         return init_downstream(value_ptr);
     } else {
-        fprintf(stderr, "process_config_line: unknown parameter \"%s\"\n", line);
+        log_msg(ERROR, "process_config_line: unknown parameter \"%s\"\n", line);
         return 1;
     }
     return 0;
@@ -522,18 +522,18 @@ int init_config(char *filename) {
     free(buffer);
     fclose(config_file);
     if (failures > 0) {
-        fprintf(stderr, "init_config: failed to load config file\n");
+        log_msg(ERROR, "init_config: failed to load config file\n");
         return 1;
     }
     if (reopen_log() != 0) {
         return 1;
     }
     if (signal(SIGHUP, on_sighup) == SIG_ERR) {
-        fprintf(stderr, "init_config: signal() failed\n");
+        log_msg(ERROR, "init_config: signal() failed\n");
         return 1;
     }
     if (signal(SIGINT, on_sigint) == SIG_ERR) {
-        fprintf(stderr, "init_config: signal() failed\n");
+        log_msg(ERROR, "init_config: signal() failed\n");
         return 1;
     }
     return 0;
@@ -739,11 +739,11 @@ int main(int argc, char *argv[]) {
     ev_tstamp ping_timer_at = 0.0;
 
    if (argc != 2) {
-        fprintf(stderr, "Usage: %s config.file\n", argv[0]);
+        fprintf(stdout, "Usage: %s config.file\n", argv[0]);
         exit(1);
     }
     if (init_config(argv[1]) != 0) {
-        fprintf(stderr, "init_config() failed\n");
+        log_msg(ERROR, "init_config() failed\n");
         exit(1);
     }
 
