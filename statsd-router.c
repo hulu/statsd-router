@@ -13,6 +13,8 @@
  *	
  */
 
+#pragma GCC diagnostic ignored "-Wstrict-aliasing"
+
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
