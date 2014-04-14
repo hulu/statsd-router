@@ -259,7 +259,8 @@ int process_data_line(char *line, int length) {
     char *colon_ptr = memchr(line, ':', length);
     // if ':' wasn't found this is not valid statsd metric
     if (colon_ptr == NULL) {
-        log_msg(ERROR, "process_line: invalid metric %s", line);
+        *(line + length - 1) = 0;
+        log_msg(ERROR, "process_data_line: invalid metric %s", line);
         return 1;
     }
     find_downstream(line, hash(line, (colon_ptr - line)), length);
