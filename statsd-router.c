@@ -722,7 +722,7 @@ void ping_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
             count++;
         }
     }
-    sprintf(buffer, "%s:%d|c\n", global.alive_downstream_metric_name, count);
+    sprintf(buffer, "%s:%d|g\n", global.alive_downstream_metric_name, count);
     process_data_line(buffer, strlen(buffer));
 }
 
