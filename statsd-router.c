@@ -34,6 +34,7 @@
 // Size of buffer for outgoing packets. Should be below MTU.
 // TODO Probably should be configured via configuration file?
 #define DOWNSTREAM_BUF_SIZE 1450
+#define DOWNSTREAM_BUF_NUM 1024
 // Size of other temporary buffers
 #define DATA_BUF_SIZE 4096
 #define DOWNSTREAM_HEALTH_CHECK_BUF_SIZE 32
@@ -65,13 +66,15 @@ struct health_check_ev_io {
 // structure that holds downstream data
 struct downstream_s {
     // buffer where data is added
+    int active_buffer_idx;
     char *active_buffer;
     int active_buffer_length;
     // buffer ready for flush
-    char *flush_buffer;
-    int flush_buffer_length;
-    // memory for both active and flush buffer
-    char buffer[DOWNSTREAM_BUF_SIZE * 2];
+    int flush_buffer_idx;
+    // memory for active and flush buffers
+    char buffer[DOWNSTREAM_BUF_SIZE * DOWNSTREAM_BUF_NUM];
+    // lengths of buffers from the above array
+    int buffer_length[DOWNSTREAM_BUF_NUM];
     // sockaddr for data
     struct sockaddr_in sa_in_data;
     // sockaddr for health
@@ -88,8 +91,6 @@ struct downstream_s {
     // statsd-router to statsd connection with data loss
     char per_downstream_counter_metric[METRIC_SIZE];
     int per_downstream_counter_metric_length;
-    // flag to prevent scheduling flush if previous is not completed
-    int flush_in_progress;
 };
 
 // globally accessed structure with commonly used data
@@ -158,6 +159,7 @@ void log_msg(int level, char *format, ...) {
 void ds_flush_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     int id = ((struct ev_io_id *)watcher)->id;
     int bytes_send;
+    int flush_buffer_idx = global.downstream[id].flush_buffer_idx;
 
     if (EV_ERROR & revents) {
         log_msg(ERROR, "udp_read_cb: invalid event %s", strerror(errno));
@@ -165,15 +167,18 @@ void ds_flush_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     }
 
     bytes_send = sendto(watcher->fd,
-        global.downstream[id].flush_buffer,
-        global.downstream[id].flush_buffer_length,
+        global.downstream[id].buffer + flush_buffer_idx * DOWNSTREAM_BUF_SIZE,
+        global.downstream[id].buffer_length[flush_buffer_idx],
         0,
         (struct sockaddr *) (&global.downstream[id].sa_in_data),
         sizeof(global.downstream[id].sa_in_data));
     // update flush time
     global.downstream[id].last_flush_time = ev_now(loop);
-    global.downstream[id].flush_in_progress = 0;
-    ev_io_stop(loop, watcher);
+    global.downstream[id].buffer_length[flush_buffer_idx] = 0;
+    global.downstream[id].flush_buffer_idx = (flush_buffer_idx + 1) % DOWNSTREAM_BUF_NUM;
+    if (global.downstream[id].flush_buffer_idx == global.downstream[id].active_buffer_idx) {
+        ev_io_stop(loop, watcher);
+    }
     if (bytes_send < 0) {
         log_msg(ERROR, "ds_flush_cb: sendto() failed %s", strerror(errno));
     }
@@ -181,23 +186,24 @@ void ds_flush_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
 
 // this function switches active and flush buffers, registers handler to send data when socket would be ready
 void ds_schedule_flush(struct downstream_s *ds) {
-    char *t = NULL;
     struct ev_io *watcher = NULL;
+    int new_active_buffer_idx = (ds->active_buffer_idx + 1) % DOWNSTREAM_BUF_NUM;
+    int need_to_schedule_flush = (ds->active_buffer_idx == ds->flush_buffer_idx);
 
-    if (ds->flush_in_progress == 1) {
+    if (ds->buffer_length[new_active_buffer_idx] > 0) {
         log_msg(ERROR, "Previous flush is not completed, loosing data.");
         ds->active_buffer_length = 0;
         return;
     }
-    ds->flush_in_progress = 1;
-    t = ds->active_buffer;
-    watcher = (struct ev_io *)&(ds->flush_watcher);
-    ds->active_buffer = ds->flush_buffer;
-    ds->flush_buffer = t;
-    ds->flush_buffer_length = ds->active_buffer_length;
+    ds->buffer_length[ds->active_buffer_idx] = ds->active_buffer_length;
+    ds->active_buffer = ds->buffer + new_active_buffer_idx * DOWNSTREAM_BUF_SIZE;
     ds->active_buffer_length = 0;
-    ev_io_init(watcher, ds_flush_cb, watcher->fd, EV_WRITE);
-    ev_io_start(ev_default_loop(0), watcher);
+    ds->active_buffer_idx = new_active_buffer_idx;
+    if (need_to_schedule_flush) {
+        watcher = (struct ev_io *)&(ds->flush_watcher);
+        ev_io_init(watcher, ds_flush_cb, watcher->fd, EV_WRITE);
+        ev_io_start(ev_default_loop(0), watcher);
+    }
 }
 
 void push_to_downstream(struct downstream_s *ds, char *line, int length) {
@@ -374,15 +380,17 @@ int init_downstream(char *hosts) {
     // now let's initialize downstreams
     for (i = 0; i < global.downstream_num; i++) {
         global.downstream[i].last_flush_time = ev_time();
-        global.downstream[i].flush_in_progress = 0;
+        global.downstream[i].active_buffer_idx = 0;
         global.downstream[i].active_buffer = global.downstream[i].buffer;
-        global.downstream[i].flush_buffer = global.downstream[i].buffer + DOWNSTREAM_BUF_SIZE;
         global.downstream[i].active_buffer_length = 0;
-        global.downstream[i].flush_buffer_length = 0;
+        global.downstream[i].flush_buffer_idx = 0;
         global.downstream[i].health_watcher.super.fd = -1;
         global.downstream[i].health_watcher.id = i;
         global.downstream[i].flush_watcher.super.fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);;
         global.downstream[i].flush_watcher.id = i;
+        for (j = 0; j < DOWNSTREAM_BUF_NUM; j++) {
+            global.downstream[i].buffer_length[j] = 0;
+        }
         if (global.downstream[i].flush_watcher.super.fd < 0) {
             log_msg(ERROR, "init_downstream: socket() failed %s", strerror(errno));
             return 1;
