@@ -484,6 +484,7 @@ int process_config_line(char *line) {
 int reopen_log() {
     if (global.log_file_name != NULL) {
         if (global.log_file != NULL) {
+            fflush(global.log_file);
             fclose(global.log_file);
         }
         global.log_file = fopen(global.log_file_name, "a");
