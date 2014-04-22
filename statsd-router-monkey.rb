@@ -13,7 +13,7 @@ MONKEY_ACTION_INTERVAL_MIN = 0.1
 MONKEY_ACTION_INTERVAL_MAX = 2.0
 SR_HEALTH_CHECK_REQUEST = "ok"
 SR_DS_PING_INTERVAL = 10.0
-SR_PING_PREFIX = "abacus-test"
+SR_PING_PREFIX = "statsd-cluster-test"
 
 HEALTH_CHECK_PROBABILITY = 0.05
 DS_TOGGLE_PROBABILITY = 0.1
@@ -169,7 +169,7 @@ class StatsdRouterMonkey
 
     def send_data()
         @counter = (@counter + 1) % 1000
-        name = "abacus.test_count#{rand(100)}"
+        name = "statsd-cluster.count#{rand(100)}"
         data = name + ":#{@counter}|c\n"
         hash = 0
         name.each_byte {|b| hash = (hash *31 + b) & 0xffffffffffffffff}
