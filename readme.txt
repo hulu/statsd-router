@@ -25,3 +25,13 @@ Statsd-router does the following:
 
 Statsd-router is implemente using libev library. It is single threaded
 application build using non-blocking IO. 
+
+Testing.
+
+There is functional test called statsd-router-monkey.rb. After building
+new statsd-router version you can check if it behaves as expected by
+running statsd-router-monkey.rb. It starts statsd-router and simulates
+several statsd instances. Those instances are periodically started and 
+stopped. statsd-router-monkey.rb checks that metrics are delivered and
+that they are delivered to correct statsd instance. In case of any
+unexpected behavior errors would be logged.
