@@ -56,7 +56,7 @@ class DataServer < EventMachine::Connection
                     break
                 else
                     if ds.healthy
-                        if now - ds.last_start_time < SR_DS_HEALTH_CHECK_INTERVAL * 2
+                        if m[:timestamp] > ds.last_start_time && m[:timestamp] - ds.last_start_time < SR_DS_HEALTH_CHECK_INTERVAL * 2
                             next
                         end
                     else
@@ -223,7 +223,7 @@ class StatsdRouterMonkey
             if now - m[:timestamp] > SR_DS_FLUSH_INTERVAL * 2
                 should_be_delivered = true
                 m[:hashring].map {|h| @downstream[h]}.each do |ds|
-                    if now - ds.last_stop_time < SR_DS_HEALTH_CHECK_INTERVAL * 2
+                    if m[:timestamp] > ds.last_stop_time && ds.last_stop_time - m[:timestamp] < SR_DS_HEALTH_CHECK_INTERVAL * 2
                         should_be_delivered = false
                         break
                     end

@@ -30,6 +30,8 @@
 
 #define HEALTHY_DOWNSTREAMS "healthy_downstreams"
 #define PER_DOWNSTREAM_COUNTER_METRIC_SUFFIX "connections:1|c"
+#define DOWNSTREAM_PACKET_COUNTER "packets"
+#define DOWNSTREAM_TRAFFIC_COUNTER "traffic"
 
 // Size of buffer for outgoing packets. Should be below MTU.
 // TODO Probably should be configured via configuration file?
@@ -91,6 +93,11 @@ struct downstream_s {
     // statsd-router to statsd connection with data loss
     char per_downstream_counter_metric[METRIC_SIZE];
     int per_downstream_counter_metric_length;
+    // metrics to detect downstreams with highest traffic
+    char downstream_traffic_counter_metric[METRIC_SIZE];
+    int downstream_traffic_counter;
+    char downstream_packet_counter_metric[METRIC_SIZE];
+    int downstream_packet_counter;
 };
 
 // globally accessed structure with commonly used data
@@ -188,6 +195,8 @@ void ds_flush_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
 void ds_schedule_flush(struct downstream_s *ds) {
     struct ev_io *watcher = NULL;
     int new_active_buffer_idx = (ds->active_buffer_idx + 1) % DOWNSTREAM_BUF_NUM;
+    // if active_buffer_idx == flush_buffer_idx this means that all previous
+    // flushes are done (no filled buffers in the queue) and we need to schedule new one
     int need_to_schedule_flush = (ds->active_buffer_idx == ds->flush_buffer_idx);
 
     if (ds->buffer_length[new_active_buffer_idx] > 0) {
@@ -195,6 +204,8 @@ void ds_schedule_flush(struct downstream_s *ds) {
         ds->active_buffer_length = 0;
         return;
     }
+    ds->downstream_packet_counter++;
+    ds->downstream_traffic_counter += ds->active_buffer_length;
     ds->buffer_length[ds->active_buffer_idx] = ds->active_buffer_length;
     ds->active_buffer = ds->buffer + new_active_buffer_idx * DOWNSTREAM_BUF_SIZE;
     ds->active_buffer_length = 0;
@@ -388,6 +399,8 @@ int init_downstream(char *hosts) {
         global.downstream[i].health_watcher.id = i;
         global.downstream[i].flush_watcher.super.fd = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);;
         global.downstream[i].flush_watcher.id = i;
+        global.downstream[i].downstream_traffic_counter = 0;
+        global.downstream[i].downstream_packet_counter = 0;
         for (j = 0; j < DOWNSTREAM_BUF_NUM; j++) {
             global.downstream[i].buffer_length[j] = 0;
         }
@@ -426,6 +439,10 @@ int init_downstream(char *hosts) {
             per_connection_prefix, host, data_port, PER_DOWNSTREAM_COUNTER_METRIC_SUFFIX,
             per_downstream_prefix, host, data_port, PER_DOWNSTREAM_COUNTER_METRIC_SUFFIX);
         global.downstream[i].per_downstream_counter_metric_length = strlen(global.downstream[i].per_downstream_counter_metric);
+        sprintf(global.downstream[i].downstream_packet_counter_metric, "%s.%s-%s.%s",
+            per_downstream_prefix, host, data_port, DOWNSTREAM_PACKET_COUNTER);
+        sprintf(global.downstream[i].downstream_traffic_counter_metric, "%s.%s-%s.%s",
+            per_downstream_prefix, host, data_port, DOWNSTREAM_TRAFFIC_COUNTER);
         host = next_host;
     }
     return 0;
@@ -723,6 +740,8 @@ void ping_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
     int count = 0;
     char buffer[METRIC_SIZE];
     struct downstream_s *ds;
+    int packets = 0;
+    int traffic = 0;
 
     for (i = 0; i < global.downstream_num; i++) {
         ds = &global.downstream[i];
@@ -730,6 +749,14 @@ void ping_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
             push_to_downstream(ds, ds->per_downstream_counter_metric, ds->per_downstream_counter_metric_length);
             count++;
         }
+        traffic = ds->downstream_traffic_counter;
+        packets = ds->downstream_packet_counter;
+        ds->downstream_traffic_counter = 0;
+        ds->downstream_packet_counter = 0;
+        sprintf(buffer, "%s:%d|c\n%s:%d|c\n",
+            ds->downstream_traffic_counter_metric, traffic,
+            ds->downstream_packet_counter_metric, packets);
+        process_data_line(buffer, strlen(buffer));
     }
     sprintf(buffer, "%s:%d|g\n", global.alive_downstream_metric_name, count);
     process_data_line(buffer, strlen(buffer));
