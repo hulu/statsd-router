@@ -98,6 +98,8 @@ struct downstream_s {
     int downstream_traffic_counter;
     char downstream_packet_counter_metric[METRIC_SIZE];
     int downstream_packet_counter;
+    // bit flag if this downstream is alive
+    unsigned int alive:1;
 };
 
 // globally accessed structure with commonly used data
@@ -160,6 +162,7 @@ void log_msg(int level, char *format, ...) {
     vsprintf(buffer + l, format, args);
     va_end(args);
     fprintf(global.log_file, "%s\n", buffer);
+    fflush(global.log_file);
 }
 
 // this function flushes data to downstream
@@ -169,7 +172,7 @@ void ds_flush_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     int flush_buffer_idx = global.downstream[id].flush_buffer_idx;
 
     if (EV_ERROR & revents) {
-        log_msg(ERROR, "udp_read_cb: invalid event %s", strerror(errno));
+        log_msg(ERROR, "%s: invalid event %s", __func__, strerror(errno));
         return;
     }
 
@@ -187,7 +190,7 @@ void ds_flush_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
         ev_io_stop(loop, watcher);
     }
     if (bytes_send < 0) {
-        log_msg(ERROR, "ds_flush_cb: sendto() failed %s", strerror(errno));
+        log_msg(ERROR, "%s: sendto() failed %s", __func__, strerror(errno));
     }
 }
 
@@ -200,7 +203,7 @@ void ds_schedule_flush(struct downstream_s *ds) {
     int need_to_schedule_flush = (ds->active_buffer_idx == ds->flush_buffer_idx);
 
     if (ds->buffer_length[new_active_buffer_idx] > 0) {
-        log_msg(ERROR, "Previous flush is not completed, loosing data.");
+        log_msg(ERROR, "%s: previous flush is not completed, loosing data.", __func__);
         ds->active_buffer_length = 0;
         return;
     }
@@ -257,7 +260,7 @@ int find_downstream(char *line, unsigned long hash, int length) {
         // quasi random number sequence, distribution is bad without this trick
         hash = (hash * 7 + 5) / 3;
     }
-    log_msg(ERROR, "all downstreams are dead");
+    log_msg(ERROR, "%s: all downstreams are dead", __func__);
     return 1;
 }
 
@@ -277,7 +280,7 @@ int process_data_line(char *line, int length) {
     // if ':' wasn't found this is not valid statsd metric
     if (colon_ptr == NULL) {
         *(line + length - 1) = 0;
-        log_msg(ERROR, "process_data_line: invalid metric %s", line);
+        log_msg(ERROR, "%s: invalid metric %s", __func__, line);
         return 1;
     }
     find_downstream(line, hash(line, (colon_ptr - line)), length);
@@ -293,14 +296,14 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     int line_length = 0;
 
     if (EV_ERROR & revents) {
-        log_msg(ERROR, "udp_read_cb: invalid event %s", strerror(errno));
+        log_msg(ERROR, "%s: invalid event %s", __func__, strerror(errno));
         return;
     }
 
     bytes_in_buffer = recv(watcher->fd, buffer, DATA_BUF_SIZE - 1, 0);
 
     if (bytes_in_buffer < 0) {
-        log_msg(ERROR, "udp_read_cb: read() failed %s", strerror(errno));
+        log_msg(ERROR, "%s: read() failed %s", __func__, strerror(errno));
         return;
     }
 
@@ -341,7 +344,7 @@ void init_sockaddr_in(struct sockaddr_in *sa_in, char *host, char *port) {
     struct hostent *he = gethostbyname(host);
 
     if (he == NULL || he->h_addr_list == NULL || (he->h_addr_list)[0] == NULL ) {
-        log_msg(ERROR, "init_sockaddr_in: gethostbyname() failed %s", strerror(errno));
+        log_msg(ERROR, "%s: gethostbyname() failed %s", __func__, strerror(errno));
         return;
     }
     bzero(sa_in, sizeof(*sa_in));
@@ -371,7 +374,7 @@ int init_downstream(char *hosts) {
     }
     global.downstream = (struct downstream_s *)malloc(sizeof(struct downstream_s) * global.downstream_num);
     if (global.downstream == NULL) {
-        log_msg(ERROR, "init_downstream: malloc() failed %s", strerror(errno));
+        log_msg(ERROR, "%s: malloc() failed %s", __func__, strerror(errno));
         return 1;
     }
     strcpy(per_connection_prefix, global.alive_downstream_metric_name);
@@ -401,15 +404,16 @@ int init_downstream(char *hosts) {
         global.downstream[i].flush_watcher.id = i;
         global.downstream[i].downstream_traffic_counter = 0;
         global.downstream[i].downstream_packet_counter = 0;
+        global.downstream[i].alive = 0;
         for (j = 0; j < DOWNSTREAM_BUF_NUM; j++) {
             global.downstream[i].buffer_length[j] = 0;
         }
         if (global.downstream[i].flush_watcher.super.fd < 0) {
-            log_msg(ERROR, "init_downstream: socket() failed %s", strerror(errno));
+            log_msg(ERROR, "%s: socket() failed %s", __func__, strerror(errno));
             return 1;
         }
         if (host == NULL) {
-            log_msg(ERROR, "init_downstream: null hostname at iteration %d", i);
+            log_msg(ERROR, "%s: null hostname at iteration %d", __func__, i);
             return 1;
         }
         next_host = strchr(host, ',');
@@ -418,13 +422,13 @@ int init_downstream(char *hosts) {
         }
         data_port = strchr(host, ':');
         if (data_port == NULL) {
-            log_msg(ERROR, "init_downstream: no data port for %s", host);
+            log_msg(ERROR, "%s: no data port for %s", __func__, host);
             return 1;
         }
         *data_port++ = 0;
         health_port = strchr(data_port, ':');
         if (health_port == NULL) {
-            log_msg(ERROR, "init_downstream: no health_port for %s", host);
+            log_msg(ERROR, "%s: no health_port for %s", __func__, host);
             return 1;
         }
         *health_port++ = 0;
@@ -456,7 +460,7 @@ int process_config_line(char *line) {
     // valid line should contain '=' symbol
     char *value_ptr = strchr(line, '=');
     if (value_ptr == NULL) {
-        log_msg(ERROR, "process_config_line: bad line in config \"%s\"", line);
+        log_msg(ERROR, "%s: bad line in config \"%s\"", __func__, line);
         return 1;
     }
     *value_ptr++ = 0;
@@ -475,7 +479,7 @@ int process_config_line(char *line) {
     } else if (strcmp("ping_prefix", line) == 0) {
         n = gethostname(buffer, METRIC_SIZE);
         if (n < 0) {
-            log_msg(ERROR, "process_config_line: gethostname() failed");
+            log_msg(ERROR, "%s: gethostname() failed", __func__);
             return 1;
         }
         sprintf(global.alive_downstream_metric_name, "%s.%s-%d.%s", value_ptr, buffer, global.port[DATA_PORT_INDEX], HEALTHY_DOWNSTREAMS);
@@ -483,7 +487,7 @@ int process_config_line(char *line) {
         l = strlen(value_ptr) + 1;
         global.log_file_name = (char *)malloc(l);
         if (global.log_file_name == NULL) {
-            log_msg(ERROR, "process_config_line: malloc() failed %s", strerror(errno));
+            log_msg(ERROR, "%s: malloc() failed %s", __func__, strerror(errno));
             return 1;
         }
         strcpy(global.log_file_name, value_ptr);
@@ -492,7 +496,7 @@ int process_config_line(char *line) {
     } else if (strcmp("downstream", line) == 0) {
         return init_downstream(value_ptr);
     } else {
-        log_msg(ERROR, "process_config_line: unknown parameter \"%s\"", line);
+        log_msg(ERROR, "%s: unknown parameter \"%s\"", __func__, line);
         return 1;
     }
     return 0;
@@ -506,7 +510,7 @@ int reopen_log() {
         }
         global.log_file = fopen(global.log_file_name, "a");
         if (global.log_file == NULL) {
-            log_msg(ERROR, "reopen_log: fopen() failed %s", strerror(errno));
+            log_msg(ERROR, "%s: fopen() failed %s", __func__, strerror(errno));
             return 1;
         }
     }
@@ -531,11 +535,11 @@ int init_config(char *filename) {
     char *buffer;
 
     global.log_file_name = NULL;
-    global.log_file = stderr;
+    global.log_file = stdout;
     global.log_level = 0;
     FILE *config_file = fopen(filename, "rt");
     if (config_file == NULL) {
-        log_msg(ERROR, "init_config: fopen() failed %s", strerror(errno));
+        log_msg(ERROR, "%s: fopen() failed %s", __func__, strerror(errno));
         return 1;
     }
     // config file can contain very long lines e.g. to specify downstreams
@@ -552,18 +556,18 @@ int init_config(char *filename) {
     free(buffer);
     fclose(config_file);
     if (failures > 0) {
-        log_msg(ERROR, "init_config: failed to load config file");
+        log_msg(ERROR, "%s: failed to load config file", __func__);
         return 1;
     }
     if (reopen_log() != 0) {
         return 1;
     }
     if (signal(SIGHUP, on_sighup) == SIG_ERR) {
-        log_msg(ERROR, "init_config: signal() failed");
+        log_msg(ERROR, "%s: signal() failed", __func__);
         return 1;
     }
     if (signal(SIGINT, on_sigint) == SIG_ERR) {
-        log_msg(ERROR, "init_config: signal() failed");
+        log_msg(ERROR, "%s: signal() failed", __func__);
         return 1;
     }
     return 0;
@@ -577,7 +581,7 @@ void health_write_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     int n;
 
     if (EV_ERROR & revents) {
-        log_msg(ERROR, "health_write_cb: invalid event %s", strerror(errno));
+        log_msg(ERROR, "%s: invalid event %s", __func__, strerror(errno));
         return;
     }
 
@@ -599,7 +603,7 @@ void health_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     ssize_t read;
 
     if (EV_ERROR & revents) {
-        log_msg(ERROR, "health_read_cb: invalid event %s", strerror(errno));
+        log_msg(ERROR, "%s: invalid event %s", __func__, strerror(errno));
         return;
     }
 
@@ -625,20 +629,20 @@ void health_accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) 
     struct ev_io *health_read_watcher;
 
     if (EV_ERROR & revents) {
-        log_msg(ERROR, "health_accept_cb: invalid event %s", strerror(errno));
+        log_msg(ERROR, "%s: invalid event %s", __func__, strerror(errno));
         return;
     }
 
     health_read_watcher = (struct ev_io*) malloc (sizeof(struct health_check_ev_io));
     if (health_read_watcher == NULL) {
-        log_msg(ERROR, "health_accept_cb: malloc() failed %s", strerror(errno));
+        log_msg(ERROR, "%s: malloc() failed %s", __func__, strerror(errno));
         return;
     }
     ((struct health_check_ev_io *)health_read_watcher)->buffer_length = 0;
     client_socket = accept(watcher->fd, (struct sockaddr *)&client_addr, &client_addr_len);
 
     if (client_socket < 0) {
-        log_msg(ERROR, "health_accept_cb: accept() failed %s", strerror(errno));
+        log_msg(ERROR, "%s: accept() failed %s", __func__, strerror(errno));
         return;
     }
 
@@ -660,23 +664,32 @@ void ds_mark_down(struct ev_io *watcher) {
         close(watcher->fd);
         watcher->fd = -1;
     }
-    global.downstream[id].active_buffer_length = 0;
+    if (global.downstream[id].alive == 1) {
+        global.downstream[id].active_buffer_length = 0;
+        global.downstream[id].alive = 0;
+        log_msg(DEBUG, "%s downstream %d is down", __func__, id);
+    }
 }
 
 void ds_health_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     char buffer[DOWNSTREAM_HEALTH_CHECK_BUF_SIZE];
     char *expected_response = "health: up\n";
     int health_fd = watcher->fd;
+    int id = ((struct ev_io_id *)watcher)->id;
     int n = recv(health_fd, buffer, DOWNSTREAM_HEALTH_CHECK_BUF_SIZE, 0);
     ev_io_stop(loop, watcher);
     if (n <= 0) {
-        log_msg(ERROR, "ds_health_read_cb: read() failed %s", strerror(errno));
+        log_msg(ERROR, "%s: read() failed %s", __func__, strerror(errno));
         ds_mark_down(watcher);
         return;
     }
     buffer[n] = 0;
     if (strcmp(buffer, expected_response) != 0) {
         ds_mark_down(watcher);
+    }
+    if (global.downstream[id].alive == 0) {
+        global.downstream[id].alive = 1;
+        log_msg(DEBUG, "%s downstream %d is up", __func__, id);
     }
 }
 
@@ -687,7 +700,7 @@ void ds_health_send_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
     int n = send(health_fd, health_check_request, health_check_request_length, 0);
     ev_io_stop(loop, watcher);
     if (n <= 0) {
-        log_msg(ERROR, "ds_health_send_cb: send() failed %s", strerror(errno));
+        log_msg(ERROR, "%s: send() failed %s", __func__, strerror(errno));
         ds_mark_down(watcher);
         return;
     }
@@ -722,7 +735,7 @@ void ds_health_check_timer_cb(struct ev_loop *loop, struct ev_io *w, int revents
         if (health_fd < 0) {
             health_fd = socket(AF_INET, SOCK_STREAM, 0);
             if (health_fd > 0 && setnonblock(health_fd) == -1) {
-                log_msg(ERROR, "ds_health_check_timer_cb: setnonblock() failed %s", strerror(errno));
+                log_msg(ERROR, "%s: setnonblock() failed %s", __func__, strerror(errno));
                 ds_mark_down(watcher);
                 continue;
             }
@@ -783,7 +796,7 @@ int main(int argc, char *argv[]) {
         exit(1);
     }
     if (init_config(argv[1]) != 0) {
-        log_msg(ERROR, "init_config() failed");
+        log_msg(ERROR, "%s: init_config() failed", __func__);
         exit(1);
     }
 
@@ -797,7 +810,7 @@ int main(int argc, char *argv[]) {
                 break;
         }
         if ((sockets[i] = socket(PF_INET, type, 0)) < 0 ) {
-            log_msg(ERROR, "main: socket() error %s", strerror(errno));
+            log_msg(ERROR, "%s: socket() error %s", __func__, strerror(errno));
             return(1);
         }
         bzero(&addr[i], sizeof(addr[i]));
@@ -806,7 +819,7 @@ int main(int argc, char *argv[]) {
         addr[i].sin_addr.s_addr = INADDR_ANY;
 
         if (bind(sockets[i], (struct sockaddr*) &addr[i], sizeof(addr[i])) != 0) {
-            log_msg(ERROR, "main: bind() failed %s", strerror(errno));
+            log_msg(ERROR, "%s: bind() failed %s", __func__, strerror(errno));
             return(1);
         }
 
@@ -815,7 +828,7 @@ int main(int argc, char *argv[]) {
                 optval = 1;
                 setsockopt(sockets[i], SOL_SOCKET, SO_REUSEADDR, &optval, sizeof optval);
                 if (listen(sockets[i], 5) < 0) {
-                    log_msg(ERROR, "main: listen() error %s", strerror(errno));
+                    log_msg(ERROR, "%s: listen() error %s", __func__, strerror(errno));
                     return(1);
                 }
                 ev_io_init(&socket_watcher[i], health_accept_cb, sockets[i], EV_READ);
@@ -835,7 +848,7 @@ int main(int argc, char *argv[]) {
     ev_periodic_start (loop, &ping_timer_watcher);
 
     ev_loop(loop, 0);
-    log_msg(ERROR, "main: ev_loop() exited");
+    log_msg(ERROR, "%s: ev_loop() exited", __func__);
     return(0);
 }
 

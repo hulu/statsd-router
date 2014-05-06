@@ -172,7 +172,7 @@ class StatsdRouterMonkey
         name = "statsd-cluster.count#{rand(100)}"
         data = name + ":#{@counter}|c\n"
         hash = 0
-        name.each_byte {|b| hash = (hash *31 + b) & 0xffffffffffffffff}
+        name.each_byte {|b| hash = (hash * 31 + b) & 0xffffffffffffffff}
         a = (0...DOWNSTREAM_NUM).to_a
         a.reverse.each do |i|
             j = hash % (i + 1)
