@@ -309,6 +309,7 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
 
     if (bytes_in_buffer > 0) {
         buffer[bytes_in_buffer++] = '\n';
+//        log_msg(DEBUG, "%s: got packet %.*s", __func__, bytes_in_buffer, buffer);
         while ((delimiter_ptr = memchr(buffer_ptr, '\n', bytes_in_buffer)) != NULL) {
             delimiter_ptr++;
             line_length = delimiter_ptr - buffer_ptr;
