@@ -41,7 +41,7 @@
 #define DATA_BUF_SIZE 4096
 #define DOWNSTREAM_HEALTH_CHECK_BUF_SIZE 32
 #define HEALTH_CHECK_BUF_SIZE 512
-#define LOG_BUF_SIZE 256
+#define LOG_BUF_SIZE 4096
 #define METRIC_SIZE 256
 
 // statsd-router ports are stored in array and accessed using indexies below

@@ -18,6 +18,10 @@ SR_PING_PREFIX = "statsd-cluster-test"
 HEALTH_CHECK_PROBABILITY = 0.05
 DS_TOGGLE_PROBABILITY = 0.1
 
+SUCCESS_EXIT_STATUS = 0
+FAILURE_EXIT_STATUS = 1
+DEFAULT_TEST_TIMEOUT = 20
+
 class DataServer < EventMachine::Connection
     def initialize(statsd_mock)
         @statsd_mock = statsd_mock
@@ -235,7 +239,7 @@ class StatsdRouterTest
                 @downstream << sm
             end
             EventMachine.popen("#{SR_EXE_FILE} #{SR_CONFIG_FILE}", OutputHandler, self)
-            EventMachine.add_timer(20) do
+            EventMachine.add_timer(@timeout) do
                 abort("Timeout")
             end
             advance_test_sequence()
@@ -246,8 +250,7 @@ class StatsdRouterTest
         run_data = @test_sequence.shift
         if run_data == nil
             EventMachine.stop()
-            puts "Test passed"
-            exit
+            exit(SUCCESS_EXIT_STATUS)
         end
         method = run_data[0]
         if method == nil
@@ -264,11 +267,17 @@ class StatsdRouterTest
         @test_sequence = []
         @expected_events = []
         @counter = 0
+        @timeout = DEFAULT_TEST_TIMEOUT
     end
 
     def notify(event)
-p event
+        if $verbose
+            puts "got: #{event}"
+        end
         event_list = @expected_events.first
+        if $verbose
+            puts "waiting for: #{event_list}"
+        end
         event_list.each do |e|
             if e[:source] == event[:source] && event[:text].end_with?(e[:text])
                 event_list.delete(e)
@@ -285,7 +294,7 @@ p event
         if EventMachine.reactor_running?
             EventMachine.stop()
         end
-        exit()
+        exit(FAILURE_EXIT_STATUS)
     end
 
     def toggle_ds_impl(ds_list)
@@ -308,9 +317,19 @@ p event
     def test_sequence
         @test_sequence
     end
+
+    def set_test_timeout(t)
+        @timeout = t
+    end
 end
 
 @srt = StatsdRouterTest.new
+
+$verbose = ARGV.delete("-v")
+
+def set_test_timeout(t)
+    @srt.set_test_timeout(t)
+end
 
 def valid_metric(n)
     @srt.valid_metric(n)
@@ -320,15 +339,14 @@ def invalid_metric(n)
     @srt.invalid_metric(n)
 end
 
-def method_missing(method, *args)
-    runtime_method = "#{method.to_s}_impl".to_sym
-    if ! (@srt.methods.include?(runtime_method) || @srt.methods.include?(runtime_method.to_s))
-        @srt.abort("Method \"#{method}\" is not implemented")
-    end
-    @srt.test_sequence << [runtime_method, args]
+def toggle_ds(*args)
+    @srt.test_sequence << [:toggle_ds_impl, args]
+end
+
+def send_data(*args)
+    @srt.test_sequence << [:send_data_impl, args]
 end
 
 at_exit do
-    undef :method_missing
     @srt.run()
 end
