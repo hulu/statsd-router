@@ -41,7 +41,7 @@
 #define DATA_BUF_SIZE 4096
 #define DOWNSTREAM_HEALTH_CHECK_BUF_SIZE 32
 #define HEALTH_CHECK_BUF_SIZE 512
-#define LOG_BUF_SIZE 4096
+#define LOG_BUF_SIZE 2048
 #define METRIC_SIZE 256
 
 // statsd-router ports are stored in array and accessed using indexies below
@@ -159,7 +159,7 @@ void log_msg(int level, char *format, ...) {
     tinfo = localtime(&t);
     l = strftime(buffer, LOG_BUF_SIZE, "%Y-%m-%d %H:%M:%S", tinfo);
     l += sprintf(buffer + l, " %s ", log_level_name(level));
-    vsprintf(buffer + l, format, args);
+    vsnprintf(buffer + l, LOG_BUF_SIZE - l, format, args);
     va_end(args);
     fprintf(global.log_file, "%s\n", buffer);
     fflush(global.log_file);
