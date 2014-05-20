@@ -2,6 +2,8 @@ PKG_NAME=hulu-statsd-router
 PKG_VERSION=0.0.5
 PKG_DESCRIPTION="Metrics router for statsd cluster"
 
+.PHONY: all test clean
+
 all: bin
 bin:
 	gcc -Wall -O2 -o statsd-router statsd-router.c -lev
@@ -13,4 +15,5 @@ pkg: bin
 	cd build && \
 	fpm --deb-user root --deb-group root -d libev-dev --description $(PKG_DESCRIPTION) -s dir -t deb -v $(PKG_VERSION) -n $(PKG_NAME) `find usr -type f` && \
 	rm -rf `ls|grep -v deb$$`
-
+test:
+	cd test && ./run-all-tests.sh
