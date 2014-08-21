@@ -48,7 +48,6 @@ declare -A run_data=(
 create_statsd_router_config() {
     local port=$1
     cat <<EOF_STATSD_ROUTER_CONFIG
-log_file_name=$LOG_DIR/statsd-router-${port}.log
 log_level=3
 data_port=${port}
 health_port=${port}
@@ -96,7 +95,7 @@ check_statsd_router() {
     local port=$1 conf=$2
     [ -r "$conf" ] || {
         create_statsd_router_config $port >$conf
-        nohup $STATSD_ROUTER $conf >/dev/null 2>&1 &
+        nohup $STATSD_ROUTER $conf 2>&1 | logger -t statsd-router &
     }
 }
 

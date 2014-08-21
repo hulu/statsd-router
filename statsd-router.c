@@ -114,9 +114,7 @@ struct global_s {
     ev_tstamp downstream_health_check_interval;
     // how often we flush data
     ev_tstamp downstream_flush_interval;
-    // log file related fields
-    char *log_file_name;
-    FILE *log_file;
+    // how noisy is our log
     int log_level;
     // how often we want to send ping metrics
     ev_tstamp downstream_ping_interval;
@@ -161,8 +159,8 @@ void log_msg(int level, char *format, ...) {
     l += sprintf(buffer + l, " %s ", log_level_name(level));
     vsnprintf(buffer + l, LOG_BUF_SIZE - l, format, args);
     va_end(args);
-    fprintf(global.log_file, "%s\n", buffer);
-    fflush(global.log_file);
+    fprintf(stdout, "%s\n", buffer);
+    fflush(stdout);
 }
 
 // this function flushes data to downstream
@@ -456,7 +454,6 @@ int init_downstream(char *hosts) {
 // function to parse single line from config file
 int process_config_line(char *line) {
     char buffer[METRIC_SIZE];
-    int l = 0;
     int n;
     // valid line should contain '=' symbol
     char *value_ptr = strchr(line, '=');
@@ -484,16 +481,6 @@ int process_config_line(char *line) {
             return 1;
         }
         sprintf(global.alive_downstream_metric_name, "%s.%s-%d.%s", value_ptr, buffer, global.port[DATA_PORT_INDEX], HEALTHY_DOWNSTREAMS);
-    } else if (strcmp("log_file_name", line) == 0) {
-        l = strlen(value_ptr) + 1;
-        global.log_file_name = (char *)malloc(l);
-        if (global.log_file_name == NULL) {
-            log_msg(ERROR, "%s: malloc() failed %s", __func__, strerror(errno));
-            return 1;
-        }
-        strcpy(global.log_file_name, value_ptr);
-        global.log_file = NULL;
-        *(global.log_file_name + l) = 0;
     } else if (strcmp("downstream", line) == 0) {
         return init_downstream(value_ptr);
     } else {
@@ -503,28 +490,13 @@ int process_config_line(char *line) {
     return 0;
 }
 
-int reopen_log() {
-    if (global.log_file_name != NULL) {
-        if (global.log_file != NULL) {
-            fflush(global.log_file);
-            fclose(global.log_file);
-        }
-        global.log_file = fopen(global.log_file_name, "a");
-        if (global.log_file == NULL) {
-            log_msg(ERROR, "%s: fopen() failed %s", __func__, strerror(errno));
-            return 1;
-        }
-    }
-    return 0;
-}
-
 // this function is called if SIGHUP is recieved
 void on_sighup(int sig) {
-    reopen_log();
+    log_msg(INFO, "%s: sighup received", __func__);
 }
 
 void on_sigint(int sig) {
-    fflush(global.log_file);
+    log_msg(INFO, "%s: sigint received", __func__);
     exit(0);
 }
 
@@ -535,8 +507,6 @@ int init_config(char *filename) {
     int failures = 0;
     char *buffer;
 
-    global.log_file_name = NULL;
-    global.log_file = stdout;
     global.log_level = 0;
     FILE *config_file = fopen(filename, "rt");
     if (config_file == NULL) {
@@ -558,9 +528,6 @@ int init_config(char *filename) {
     fclose(config_file);
     if (failures > 0) {
         log_msg(ERROR, "%s: failed to load config file", __func__);
-        return 1;
-    }
-    if (reopen_log() != 0) {
         return 1;
     }
     if (signal(SIGHUP, on_sighup) == SIG_ERR) {
