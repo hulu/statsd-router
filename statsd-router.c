@@ -325,7 +325,7 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
 }
 
 // this function cycles through downstreams and flushes them on scheduled basis
-void ds_flush_timer_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
+void ds_flush_timer_cb(struct ev_loop *loop, struct ev_periodic *p, int revents) {
     int i;
     ev_tstamp now = ev_now(loop);
     struct downstream_s *ds;
@@ -692,7 +692,7 @@ void ds_health_connect_cb(struct ev_loop *loop, struct ev_io *watcher, int reven
     }
 }
 
-void ds_health_check_timer_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
+void ds_health_check_timer_cb(struct ev_loop *loop, struct ev_periodic *p, int revents) {
     int i;
     int health_fd;
     struct ev_io *watcher;
@@ -716,7 +716,7 @@ void ds_health_check_timer_cb(struct ev_loop *loop, struct ev_io *w, int revents
     }
 }
 
-void ping_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
+void ping_cb(struct ev_loop *loop, struct ev_periodic *p, int revents) {
     int i = 0;
     int count = 0;
     char buffer[METRIC_SIZE];
