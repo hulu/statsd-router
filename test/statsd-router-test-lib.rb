@@ -34,15 +34,15 @@ FAILURE_EXIT_STATUS = 1
 # default test timeout value, can be changed via set_test_timeout() method
 DEFAULT_TEST_TIMEOUT = 20
 
-# DataServer is part of statsd simulation. It listens on udp port, accepts data
-# and verifies, that it got expected metrics
+# DataServer is part of statsd simulation. It listens on UDP port, accepts data,
+# and verifies that it got expected metrics
 class DataServer < EventMachine::Connection
     def initialize(statsd_mock)
         @statsd_mock = statsd_mock
         @test_controller = statsd_mock.test_controller
     end
 
-    # this method is called when udp socket gets data
+    # this method is called when UDP socket gets data
     def receive_data(data)
         now = Time.now.to_f
         # packet can contain several metrics separated by new lines, let's process them one by one
@@ -60,19 +60,19 @@ class DataServer < EventMachine::Connection
             m[:hashring].each do |h|
                 # we retrieve downstream
                 ds = @statsd_mock.get_all[h]
-                # and check it's index
-                # if index equals to index of statsd, which recieved this metric
+                # and check its index
+                # if index equals to index of statsd, which received this metric
                 if ds.num == @statsd_mock.num
                     # we check if this statsd is up, giving it some free play range
                     # if statsd is down, but it received metric - this is an error, test should be aborted
                     if !ds.healthy && (now - ds.last_stop_time > SR_DS_HEALTH_CHECK_INTERVAL * 2)
                         @test_controller.abort("#{@statsd_mock.num} got data though it is down")
                     end
-                    # let's remove recieved metric from message queue
+                    # let's remove received metric from message queue
                     StatsdRouterTest.get_message_queue().delete(m)
                     break
                 else
-                    # we are here because ds is not downstream, which recieved metric
+                    # we are here because ds is not downstream, which received metric
                     # if it is down - no issues
                     # if it is up we need to check, when it became alive and give it some free play range
                     if ds.healthy
@@ -83,7 +83,7 @@ class DataServer < EventMachine::Connection
                         next
                     end
                 end
-                # something is wrong, metric was recieved by wrong downstream or was not recieved by correct one
+                # something is wrong, metric was received by wrong downstream or was not received by correct one
                 # this is error, test should be aborted
                 @test_controller.abort("Hashring problem: #{m[:hashring]}, #{h} health status: #{ds.healthy}")
             end
@@ -164,7 +164,7 @@ class OutputHandler < EM::Connection
         @test_controller = test_controller
     end
 
-    # when data is recieved test controller is being notified
+    # when data is received test controller is being notified
     def receive_data(data)
         data.split("\n").each do |d|
             @test_controller.notify({source: "statsd-router", text: d})
@@ -173,7 +173,7 @@ class OutputHandler < EM::Connection
 end
 
 # module to check statsd router health
-# currently statsd router health check is done via tcp port
+# currently statsd router health check is done via TCP port
 # request is echoed back
 module HealthClient
     def receive_data(data)
@@ -205,7 +205,7 @@ class StatsdRouterTest
     # function to calculate consistent hashing ring
     # same algorithms are used in statsd router
     def hashring(name)
-        # 1st we calculate hash name for the name (algorith borrowed from java String class)
+        # 1st we calculate hash name for the name (algorithm borrowed from java String class)
         hash = 0
         name.each_byte {|b| hash = (hash * 31 + b) & 0xffffffffffffffff}
         # next we create array with downstream numbers and shuffle it using hash value
