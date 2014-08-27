@@ -44,7 +44,7 @@
 #define LOG_BUF_SIZE 2048
 #define METRIC_SIZE 256
 
-// statsd-router ports are stored in array and accessed using indexies below
+// statsd-router ports are stored in array and accessed using indexes below
 #define DATA_PORT_INDEX 0
 #define HEALTH_PORT_INDEX 1
 // number of ports used by statsd-router
@@ -89,7 +89,7 @@ struct downstream_s {
     ev_tstamp last_flush_time;
     // each statsd instance during each ping interval
     // would increment per connection counters
-    // this would allow us to detect metris loss and locate
+    // this would allow us to detect metrics loss and locate
     // statsd-router to statsd connection with data loss
     char per_downstream_counter_metric[METRIC_SIZE];
     int per_downstream_counter_metric_length;
@@ -324,7 +324,7 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     }
 }
 
-// this fuction cycles through downstreams and flushes them on scheduled basis
+// this function cycles through downstreams and flushes them on scheduled basis
 void ds_flush_timer_cb(struct ev_loop *loop, struct ev_io *w, int revents) {
     int i;
     ev_tstamp now = ev_now(loop);
@@ -490,7 +490,7 @@ int process_config_line(char *line) {
     return 0;
 }
 
-// this function is called if SIGHUP is recieved
+// this function is called if SIGHUP is received
 void on_sighup(int sig) {
     log_msg(INFO, "%s: sighup received", __func__);
 }
