@@ -17,7 +17,7 @@ BASE_STATSD_ROUTER_PORT=8100
 # statsd uses ports 8200, 8201 etc
 BASE_STATSD_PORT=8200
 # how often we check that cluster components are running
-WATCHDOG_INTERVAL=5
+WATCHDOG_INTERVAL=5 # seconds
 # location of configs for statsd and statsd-router instances
 CONF_DIR=/tmp
 # location of logs
