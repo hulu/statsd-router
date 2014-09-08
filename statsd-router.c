@@ -314,7 +314,7 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
             // minimum metrics line should look like X:1|c
             // so lines with length less than 5 can be ignored
             if (line_length > 5 && line_length < DOWNSTREAM_BUF_SIZE) {
-                // if line is not empty let's process it
+                // if line has valid length let's process it
                 process_data_line(buffer_ptr, line_length);
             } else {
                 log_msg(ERROR, "%s: invalid length %d of metric \"%.*s\"", __func__, line_length, line_length, buffer_ptr);
