@@ -34,6 +34,10 @@ FAILURE_EXIT_STATUS = 1
 # default test timeout value, can be changed via set_test_timeout() method
 DEFAULT_TEST_TIMEOUT = 20
 
+# min and max metrics length (those are processed differently than metrics with garbage content)
+MIN_METRICS_LENGTH = 6
+MAX_METRICS_LENGTH = 1450
+
 # DataServer is part of statsd simulation. It listens on UDP port, accepts data,
 # and verifies that it got expected metrics
 class DataServer < EventMachine::Connection
@@ -245,11 +249,19 @@ class StatsdRouterTest
 
     # this function generates invalid metrics of given length
     def invalid_metric(length)
-        data = (0...length).map { (65 + rand(26)).chr }.join
-        {
-            data: data,
-            event: {source: "statsd-router", text: "ERROR process_data_line: invalid metric #{data}"}
-        }
+        # length - 1 because of terminating new line
+        data = (0...(length - 1)).map { (65 + rand(26)).chr }.join
+        if length < MIN_METRICS_LENGTH || length > MAX_METRICS_LENGTH
+            {
+                data: data,
+                event: {source: "statsd-router", text: "ERROR udp_read_cb: invalid length #{length} of metric #{data}"}
+            }
+        else
+            {
+                data: data,
+                event: {source: "statsd-router", text: "ERROR process_data_line: invalid metric #{data}"}
+            }
+        end
     end
 
     # this function sends data during test execution

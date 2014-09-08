@@ -306,18 +306,20 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     }
 
     if (bytes_in_buffer > 0) {
-        buffer[bytes_in_buffer++] = '\n';
+        if (buffer[bytes_in_buffer - 1] != '\n') {
+            buffer[bytes_in_buffer++] = '\n';
+        }
 //        log_msg(DEBUG, "%s: got packet %.*s", __func__, bytes_in_buffer, buffer);
         while ((delimiter_ptr = memchr(buffer_ptr, '\n', bytes_in_buffer)) != NULL) {
             delimiter_ptr++;
             line_length = delimiter_ptr - buffer_ptr;
-            // minimum metrics line should look like X:1|c
-            // so lines with length less than 5 can be ignored
+            // minimum metrics line should look like X:1|c\n
+            // so lines with length less than 6 can be ignored
             if (line_length > 5 && line_length < DOWNSTREAM_BUF_SIZE) {
                 // if line has valid length let's process it
                 process_data_line(buffer_ptr, line_length);
             } else {
-                log_msg(ERROR, "%s: invalid length %d of metric \"%.*s\"", __func__, line_length, line_length, buffer_ptr);
+                log_msg(ERROR, "%s: invalid length %d of metric %.*s", __func__, line_length, line_length, buffer_ptr);
             }
             // this is not last metric, let's advance line start pointer
             buffer_ptr = delimiter_ptr;
