@@ -281,6 +281,11 @@ int process_data_line(char *line, int length) {
         log_msg(ERROR, "%s: invalid metric %s", __func__, line);
         return 1;
     }
+    if (length > DOWNSTREAM_BUF_SIZE) {
+        *(line + length - 1) = 0;
+        log_msg(ERROR, "%s: too long metric %s", __func__, line);
+        return 1;
+    }
     find_downstream(line, hash(line, (colon_ptr - line)), length);
     return 0;
 }
