@@ -281,11 +281,6 @@ int process_data_line(char *line, int length) {
         log_msg(ERROR, "%s: invalid metric %s", __func__, line);
         return 1;
     }
-    if (length > DOWNSTREAM_BUF_SIZE) {
-        *(line + length - 1) = 0;
-        log_msg(ERROR, "%s: too long metric %s", __func__, line);
-        return 1;
-    }
     find_downstream(line, hash(line, (colon_ptr - line)), length);
     return 0;
 }
@@ -318,9 +313,11 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
             line_length = delimiter_ptr - buffer_ptr;
             // minimum metrics line should look like X:1|c
             // so lines with length less than 5 can be ignored
-            if (line_length > 5) {
+            if (line_length > 5 && line_length < DOWNSTREAM_BUF_SIZE) {
                 // if line is not empty let's process it
                 process_data_line(buffer_ptr, line_length);
+            } else {
+                log_msg(ERROR, "%s: invalid length %d of metric \"%.*s\"", __func__, line_length, line_length, buffer_ptr);
             }
             // this is not last metric, let's advance line start pointer
             buffer_ptr = delimiter_ptr;
