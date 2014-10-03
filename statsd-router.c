@@ -656,8 +656,10 @@ void ds_health_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
         return;
     }
     buffer[n] = 0;
+    // TODO strcmp() -> memcmp()
     if (strcmp(buffer, expected_response) != 0) {
         ds_mark_down(watcher);
+        return;
     }
     if (global.downstream[id].alive == 0) {
         global.downstream[id].alive = 1;
@@ -706,13 +708,21 @@ void ds_health_check_timer_cb(struct ev_loop *loop, struct ev_periodic *p, int r
         health_fd = watcher->fd;
         if (health_fd < 0) {
             health_fd = socket(AF_INET, SOCK_STREAM, 0);
-            if (health_fd > 0 && setnonblock(health_fd) == -1) {
-                log_msg(ERROR, "%s: setnonblock() failed %s", __func__, strerror(errno));
-                ds_mark_down(watcher);
+            if (health_fd == -1) {
+                log_msg(ERROR, "%s: socket() failed %s", __func__, strerror(errno));
                 continue;
             }
-            connect(health_fd, (struct sockaddr *)(&global.downstream[i].sa_in_health), sizeof(global.downstream[i].sa_in_health));
-            ev_io_init(watcher, ds_health_connect_cb, health_fd, EV_WRITE);
+            if (setnonblock(health_fd) == -1) {
+                log_msg(ERROR, "%s: setnonblock() failed %s", __func__, strerror(errno));
+                continue;
+            }
+            if (connect(health_fd, (struct sockaddr *)(&global.downstream[i].sa_in_health), sizeof(global.downstream[i].sa_in_health)) == -1 && errno == EINPROGRESS) {
+                ev_io_init(watcher, ds_health_connect_cb, health_fd, EV_WRITE);
+            } else {
+                log_msg(ERROR, "%s: connect() failed %s", __func__, strerror(errno));
+                close(health_fd);
+                continue;
+            }
         } else {
             ev_io_init(watcher, ds_health_send_cb, health_fd, EV_WRITE);
         }
