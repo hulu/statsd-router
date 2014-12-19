@@ -254,12 +254,12 @@ class StatsdRouterTest
         if length < MIN_METRICS_LENGTH || length > MAX_METRICS_LENGTH
             {
                 data: data,
-                event: {source: "statsd-router", text: "ERROR udp_read_cb: invalid length #{length} of metric #{data}"}
+                event: {source: "statsd-router", text: "WARN udp_read_cb: invalid length #{length} of metric #{data}"}
             }
         else
             {
                 data: data,
-                event: {source: "statsd-router", text: "ERROR process_data_line: invalid metric #{data}"}
+                event: {source: "statsd-router", text: "WARN process_data_line: invalid metric #{data}"}
             }
         end
     end
@@ -386,7 +386,7 @@ class StatsdRouterTest
             if ds == nil
                 abort("Invalid downstream #{ds_num}")
             end
-            text = ds.healthy ? "DEBUG ds_mark_down downstream #{ds_num} is down" : "DEBUG ds_health_read_cb downstream #{ds_num} is up"
+            text = ds.healthy ? "TRACE ds_mark_down downstream #{ds_num} is down" : "TRACE ds_health_read_cb downstream #{ds_num} is up"
             event_list << {source: "statsd-router", text: text}
         end
         @expected_events << event_list

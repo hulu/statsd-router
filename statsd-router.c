@@ -60,7 +60,7 @@ struct ev_io_id {
 // extended ev structure with buffer and buffer length
 // used by health check clients
 struct health_check_ev_io {
-    struct ev_io ev_io_orig;
+    struct ev_io super;
     char buffer[HEALTH_CHECK_BUF_SIZE];
     int buffer_length;
 };
@@ -129,15 +129,16 @@ void health_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents);
 
 // numeric values for log levels
 enum log_level_e {
-    INFO,
+    TRACE,
     DEBUG,
+    INFO,
     WARN,
     ERROR
 };
 
 // and function to convert numeric values into strings
 char *log_level_name(enum log_level_e level) {
-    static char *name[] = { "INFO", "DEBUG", "WARN", "ERROR"};
+    static char *name[] = { "TRACE", "DEBUG", "INFO", "WARN", "ERROR"};
     return name[level];
 }
 
@@ -170,7 +171,7 @@ void ds_flush_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     int flush_buffer_idx = global.downstream[id].flush_buffer_idx;
 
     if (EV_ERROR & revents) {
-        log_msg(ERROR, "%s: invalid event %s", __func__, strerror(errno));
+        log_msg(WARN, "%s: invalid event %s", __func__, strerror(errno));
         return;
     }
 
@@ -188,7 +189,7 @@ void ds_flush_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
         ev_io_stop(loop, watcher);
     }
     if (bytes_send < 0) {
-        log_msg(ERROR, "%s: sendto() failed %s", __func__, strerror(errno));
+        log_msg(WARN, "%s: sendto() failed %s", __func__, strerror(errno));
     }
 }
 
@@ -201,7 +202,7 @@ void ds_schedule_flush(struct downstream_s *ds) {
     int need_to_schedule_flush = (ds->active_buffer_idx == ds->flush_buffer_idx);
 
     if (ds->buffer_length[new_active_buffer_idx] > 0) {
-        log_msg(ERROR, "%s: previous flush is not completed, loosing data.", __func__);
+        log_msg(WARN, "%s: previous flush is not completed, loosing data.", __func__);
         ds->active_buffer_length = 0;
         return;
     }
@@ -258,7 +259,7 @@ int find_downstream(char *line, unsigned long hash, int length) {
         // quasi random number sequence, distribution is bad without this trick
         hash = (hash * 7 + 5) / 3;
     }
-    log_msg(ERROR, "%s: all downstreams are dead", __func__);
+    log_msg(WARN, "%s: all downstreams are dead", __func__);
     return 1;
 }
 
@@ -278,7 +279,7 @@ int process_data_line(char *line, int length) {
     // if ':' wasn't found this is not valid statsd metric
     if (colon_ptr == NULL) {
         *(line + length - 1) = 0;
-        log_msg(ERROR, "%s: invalid metric %s", __func__, line);
+        log_msg(WARN, "%s: invalid metric %s", __func__, line);
         return 1;
     }
     find_downstream(line, hash(line, (colon_ptr - line)), length);
@@ -294,14 +295,14 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     int line_length = 0;
 
     if (EV_ERROR & revents) {
-        log_msg(ERROR, "%s: invalid event %s", __func__, strerror(errno));
+        log_msg(WARN, "%s: invalid event %s", __func__, strerror(errno));
         return;
     }
 
     bytes_in_buffer = recv(watcher->fd, buffer, DATA_BUF_SIZE - 1, 0);
 
     if (bytes_in_buffer < 0) {
-        log_msg(ERROR, "%s: read() failed %s", __func__, strerror(errno));
+        log_msg(WARN, "%s: recv() failed %s", __func__, strerror(errno));
         return;
     }
 
@@ -309,7 +310,7 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
         if (buffer[bytes_in_buffer - 1] != '\n') {
             buffer[bytes_in_buffer++] = '\n';
         }
-//        log_msg(DEBUG, "%s: got packet %.*s", __func__, bytes_in_buffer, buffer);
+        log_msg(TRACE, "%s: got packet %.*s", __func__, bytes_in_buffer, buffer);
         while ((delimiter_ptr = memchr(buffer_ptr, '\n', bytes_in_buffer)) != NULL) {
             delimiter_ptr++;
             line_length = delimiter_ptr - buffer_ptr;
@@ -319,7 +320,7 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
                 // if line has valid length let's process it
                 process_data_line(buffer_ptr, line_length);
             } else {
-                log_msg(ERROR, "%s: invalid length %d of metric %.*s", __func__, line_length, line_length, buffer_ptr);
+                log_msg(WARN, "%s: invalid length %d of metric %.*s", __func__, line_length, line_length, buffer_ptr);
             }
             // this is not last metric, let's advance line start pointer
             buffer_ptr = delimiter_ptr;
@@ -343,17 +344,18 @@ void ds_flush_timer_cb(struct ev_loop *loop, struct ev_periodic *p, int revents)
     }
 }
 
-void init_sockaddr_in(struct sockaddr_in *sa_in, char *host, char *port) {
+int init_sockaddr_in(struct sockaddr_in *sa_in, char *host, char *port) {
     struct hostent *he = gethostbyname(host);
 
     if (he == NULL || he->h_addr_list == NULL || (he->h_addr_list)[0] == NULL ) {
         log_msg(ERROR, "%s: gethostbyname() failed %s", __func__, strerror(errno));
-        return;
+        return 1;
     }
     bzero(sa_in, sizeof(*sa_in));
     sa_in->sin_family = AF_INET;
     sa_in->sin_port = htons(atoi(port));
     memcpy(&(sa_in->sin_addr), he->h_addr_list[0], he->h_length);
+    return 0;
 }
 
 // function to init downstreams from config file line
@@ -435,8 +437,12 @@ int init_downstream(char *hosts) {
             return 1;
         }
         *health_port++ = 0;
-        init_sockaddr_in(&global.downstream[i].sa_in_data, host, data_port);
-        init_sockaddr_in(&global.downstream[i].sa_in_health, host, health_port);
+        if (init_sockaddr_in(&global.downstream[i].sa_in_data, host, data_port) != 0) {
+            return 1;
+        }
+        if (init_sockaddr_in(&global.downstream[i].sa_in_health, host, health_port) != 0) {
+            return 1;
+        }
         for (j = 0; *(host + j) != 0; j++) {
             if (*(host + j) == '.') {
                 *(host + j) = '_';
@@ -499,6 +505,7 @@ void on_sighup(int sig) {
     log_msg(INFO, "%s: sighup received", __func__);
 }
 
+// this function is called if SIGINT is received
 void on_sigint(int sig) {
     log_msg(INFO, "%s: sigint received", __func__);
     exit(0);
@@ -535,11 +542,11 @@ int init_config(char *filename) {
         return 1;
     }
     if (signal(SIGHUP, on_sighup) == SIG_ERR) {
-        log_msg(ERROR, "%s: signal() failed", __func__);
+        log_msg(ERROR, "%s: signal() for sighup failed", __func__);
         return 1;
     }
     if (signal(SIGINT, on_sigint) == SIG_ERR) {
-        log_msg(ERROR, "%s: signal() failed", __func__);
+        log_msg(ERROR, "%s: signal() for sigint failed", __func__);
         return 1;
     }
     return 0;
@@ -553,7 +560,7 @@ void health_write_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     int n;
 
     if (EV_ERROR & revents) {
-        log_msg(ERROR, "%s: invalid event %s", __func__, strerror(errno));
+        log_msg(WARN, "%s: invalid event %s", __func__, strerror(errno));
         return;
     }
 
@@ -565,6 +572,7 @@ void health_write_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
         ev_io_start(loop, watcher);
         return;
     }
+    log_msg(WARN, "%s: error while sending health check response", __func__);
     close(watcher->fd);
     free(watcher);
 }
@@ -575,7 +583,7 @@ void health_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     ssize_t read;
 
     if (EV_ERROR & revents) {
-        log_msg(ERROR, "%s: invalid event %s", __func__, strerror(errno));
+        log_msg(WARN, "%s: invalid event %s", __func__, strerror(errno));
         return;
     }
 
@@ -590,6 +598,7 @@ void health_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
         return;
     }
     // we are here because error happened or socket is closing
+    log_msg(WARN, "%s: error while reading health check request", __func__);
     close(watcher->fd);
     free(watcher);
 }
@@ -601,7 +610,7 @@ void health_accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) 
     struct ev_io *health_read_watcher;
 
     if (EV_ERROR & revents) {
-        log_msg(ERROR, "%s: invalid event %s", __func__, strerror(errno));
+        log_msg(WARN, "%s: invalid event %s", __func__, strerror(errno));
         return;
     }
 
@@ -639,7 +648,7 @@ void ds_mark_down(struct ev_io *watcher) {
     if (global.downstream[id].alive == 1) {
         global.downstream[id].active_buffer_length = 0;
         global.downstream[id].alive = 0;
-        log_msg(DEBUG, "%s downstream %d is down", __func__, id);
+        log_msg(TRACE, "%s downstream %d is down", __func__, id);
     }
 }
 
@@ -648,10 +657,10 @@ void ds_health_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
     char *expected_response = "health: up\n";
     int health_fd = watcher->fd;
     int id = ((struct ev_io_id *)watcher)->id;
-    int n = recv(health_fd, buffer, DOWNSTREAM_HEALTH_CHECK_BUF_SIZE, 0);
     ev_io_stop(loop, watcher);
+    int n = recv(health_fd, buffer, DOWNSTREAM_HEALTH_CHECK_BUF_SIZE, 0);
     if (n <= 0) {
-        log_msg(ERROR, "%s: read() failed %s", __func__, strerror(errno));
+        log_msg(WARN, "%s: recv() failed %s", __func__, strerror(errno));
         ds_mark_down(watcher);
         return;
     }
@@ -663,7 +672,7 @@ void ds_health_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
     }
     if (global.downstream[id].alive == 0) {
         global.downstream[id].alive = 1;
-        log_msg(DEBUG, "%s downstream %d is up", __func__, id);
+        log_msg(TRACE, "%s downstream %d is up", __func__, id);
     }
 }
 
@@ -671,10 +680,10 @@ void ds_health_send_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
     char *health_check_request = "health";
     int health_check_request_length = strlen(health_check_request);
     int health_fd = watcher->fd;
-    int n = send(health_fd, health_check_request, health_check_request_length, 0);
     ev_io_stop(loop, watcher);
+    int n = send(health_fd, health_check_request, health_check_request_length, 0);
     if (n <= 0) {
-        log_msg(ERROR, "%s: send() failed %s", __func__, strerror(errno));
+        log_msg(WARN, "%s: send() failed %s", __func__, strerror(errno));
         ds_mark_down(watcher);
         return;
     }
@@ -687,8 +696,8 @@ void ds_health_connect_cb(struct ev_loop *loop, struct ev_io *watcher, int reven
     int err;
 
     socklen_t len = sizeof(err);
-    getsockopt(health_fd, SOL_SOCKET, SO_ERROR, &err, &len);
     ev_io_stop(loop, watcher);
+    getsockopt(health_fd, SOL_SOCKET, SO_ERROR, &err, &len);
     if (err) {
         ds_mark_down(watcher);
         return;
@@ -706,20 +715,26 @@ void ds_health_check_timer_cb(struct ev_loop *loop, struct ev_periodic *p, int r
     for (i = 0; i < global.downstream_num; i++) {
         watcher = (struct ev_io *)(&global.downstream[i].health_watcher);
         health_fd = watcher->fd;
+        if (health_fd > 0 && ev_is_active(watcher)) {
+            log_msg(WARN, "%s: previous health check request was not completed for downstream %d", __func__, i);
+            ds_mark_down(watcher);
+            health_fd = -1;
+        }
         if (health_fd < 0) {
             health_fd = socket(AF_INET, SOCK_STREAM, 0);
             if (health_fd == -1) {
-                log_msg(ERROR, "%s: socket() failed %s", __func__, strerror(errno));
+                log_msg(WARN, "%s: socket() failed %s", __func__, strerror(errno));
                 continue;
             }
             if (setnonblock(health_fd) == -1) {
-                log_msg(ERROR, "%s: setnonblock() failed %s", __func__, strerror(errno));
+                close(health_fd);
+                log_msg(WARN, "%s: setnonblock() failed %s", __func__, strerror(errno));
                 continue;
             }
             if (connect(health_fd, (struct sockaddr *)(&global.downstream[i].sa_in_health), sizeof(global.downstream[i].sa_in_health)) == -1 && errno == EINPROGRESS) {
                 ev_io_init(watcher, ds_health_connect_cb, health_fd, EV_WRITE);
             } else {
-                log_msg(ERROR, "%s: connect() failed %s", __func__, strerror(errno));
+                log_msg(WARN, "%s: connect() failed %s", __func__, strerror(errno));
                 close(health_fd);
                 continue;
             }
