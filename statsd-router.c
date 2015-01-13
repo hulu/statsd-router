@@ -717,6 +717,7 @@ void ds_health_check_timer_cb(struct ev_loop *loop, struct ev_periodic *p, int r
         health_fd = watcher->fd;
         if (health_fd > 0 && ev_is_active(watcher)) {
             log_msg(WARN, "%s: previous health check request was not completed for downstream %d", __func__, i);
+            ev_io_stop(loop, watcher);
             ds_mark_down(watcher);
             health_fd = -1;
         }
