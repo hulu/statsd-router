@@ -28,9 +28,14 @@ application built using non-blocking IO.
 
 Testing.
 
-There is a functional test called statsd-router-monkey.rb. After building
-a new statsd-router version, you can check if it behaves as expected by
-running statsd-router-monkey.rb. It starts statsd-router and simulates
+Tests are located in test/ directory. You can run them either via
+'make test' command or by running run-all-tests.sh in test/ directory.
+
+Each test can be run individually. You can provide -v option to get
+verbose output.
+
+There is also old (and currently broken) functional test called
+statsd-router-monkey.rb.  It starts statsd-router and simulates
 several statsd instances. Those instances are periodically started and 
 stopped. statsd-router-monkey.rb checks that metrics are delivered and
 that they are delivered to the correct statsd instance. Any unexpected
