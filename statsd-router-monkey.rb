@@ -1,4 +1,9 @@
 #!/usr/bin/env ruby
+
+# IMPORTANT!!!
+# This code is outdated and wouldn't work with latest statsd-router.
+# Please see tests/ directory for working test code.
+
 require 'eventmachine'
 
 DOWNSTREAM_NUM = 3

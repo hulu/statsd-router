@@ -50,7 +50,7 @@ create_statsd_router_config() {
     cat <<EOF_STATSD_ROUTER_CONFIG
 log_level=3
 data_port=${port}
-health_port=${port}
+control_port=${port}
 downstream_health_check_interval=2.0
 downstream_flush_interval=2.0
 downstream_ping_interval=1.0

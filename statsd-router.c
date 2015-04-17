@@ -28,6 +28,8 @@
 #include <unistd.h>
 #include <errno.h>
 
+#define STRLEN(s) (sizeof(s) / sizeof(s[0]) - 1)
+
 #define HEALTHY_DOWNSTREAMS "healthy_downstreams"
 #define PER_DOWNSTREAM_COUNTER_METRIC_SUFFIX "connections:1|c"
 #define DOWNSTREAM_PACKET_COUNTER "packets"
@@ -40,13 +42,16 @@
 // Size of other temporary buffers
 #define DATA_BUF_SIZE 4096
 #define DOWNSTREAM_HEALTH_CHECK_BUF_SIZE 32
-#define HEALTH_CHECK_BUF_SIZE 512
+#define CONTROL_REQUEST_BUF_SIZE 32
+#define HEALTH_CHECK_REQUEST "health"
+#define HEALTH_CHECK_RESPONSE_BUF_SIZE 32
+#define HEALTH_CHECK_UP_RESPONSE "health: up\n"
 #define LOG_BUF_SIZE 2048
 #define METRIC_SIZE 256
 
 // statsd-router ports are stored in array and accessed using indexes below
 #define DATA_PORT_INDEX 0
-#define HEALTH_PORT_INDEX 1
+#define CONTROL_PORT_INDEX 1
 // number of ports used by statsd-router
 #define PORTS_NUM 2
 
@@ -57,11 +62,11 @@ struct ev_io_id {
     int id;
 };
 
-// extended ev structure with buffer and buffer length
-// used by health check clients
-struct health_check_ev_io {
+// extended ev structure with buffer pointer and buffer length
+// used by control port connections
+struct ev_io_control {
     struct ev_io super;
-    char buffer[HEALTH_CHECK_BUF_SIZE];
+    char *buffer;
     int buffer_length;
 };
 
@@ -104,7 +109,7 @@ struct downstream_s {
 
 // globally accessed structure with commonly used data
 struct global_s {
-    // statsd-router ports, accessed via DATA_PORT_INDEX and HEALTH_PORT_INDEX
+    // statsd-router ports, accessed via DATA_PORT_INDEX and CONTROL_PORT_INDEX
     int port[PORTS_NUM];
     // how many downstreams we have
     int downstream_num;
@@ -119,13 +124,15 @@ struct global_s {
     // how often we want to send ping metrics
     ev_tstamp downstream_ping_interval;
     char alive_downstream_metric_name[METRIC_SIZE];
+    char health_check_response_buf[HEALTH_CHECK_RESPONSE_BUF_SIZE];
+    int health_check_response_buf_length;
 };
 
 struct global_s global;
 
 // we have this forward declaration here since this callback is using other callback
 // one of them should be declared forward
-void health_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents);
+void control_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents);
 
 // numeric values for log levels
 enum log_level_e {
@@ -238,6 +245,7 @@ int find_downstream(char *line, unsigned long hash, int length) {
     int i, j, k;
     struct downstream_s *ds;
 
+    log_msg(TRACE, "%s: hash = %lx, length = %d, line = %.*s", __func__, hash, length, length, line);
     // array is ordered before reshuffling
     for (i = 0; i < global.downstream_num; i++) {
         downstream[i] = i;
@@ -248,7 +256,8 @@ int find_downstream(char *line, unsigned long hash, int length) {
         k = downstream[j];
         // k is downstream number for this metric, is it alive?
         ds = &(global.downstream[k]);
-        if ((ds->health_watcher).super.fd > 0) {
+        if (ds->alive) {
+            log_msg(TRACE, "%s: pushing to downstream %d", __func__, k);
             push_to_downstream(ds, line, length);
             return 0;
         }
@@ -474,8 +483,8 @@ int process_config_line(char *line) {
     *value_ptr++ = 0;
     if (strcmp("data_port", line) == 0) {
         global.port[DATA_PORT_INDEX] = atoi(value_ptr);
-    } else if (strcmp("health_port", line) == 0) {
-        global.port[HEALTH_PORT_INDEX] = atoi(value_ptr);
+    } else if (strcmp("control_port", line) == 0) {
+        global.port[CONTROL_PORT_INDEX] = atoi(value_ptr);
     } else if (strcmp("downstream_flush_interval", line) == 0) {
         global.downstream_flush_interval = atof(value_ptr);
     } else if (strcmp("downstream_health_check_interval", line) == 0) {
@@ -549,14 +558,16 @@ int init_config(char *filename) {
         log_msg(ERROR, "%s: signal() for sigint failed", __func__);
         return 1;
     }
+    strncpy(global.health_check_response_buf, HEALTH_CHECK_UP_RESPONSE, STRLEN(HEALTH_CHECK_UP_RESPONSE));
+    global.health_check_response_buf_length = STRLEN(HEALTH_CHECK_UP_RESPONSE);
     return 0;
 }
 
 // self health check related functions
 
-void health_write_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
-    char *buffer = ((struct health_check_ev_io *)watcher)->buffer;
-    int buffer_length = ((struct health_check_ev_io *)watcher)->buffer_length;
+void control_write_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
+    char *buffer = ((struct ev_io_control *)watcher)->buffer;
+    int buffer_length = ((struct ev_io_control *)watcher)->buffer_length;
     int n;
 
     if (EV_ERROR & revents) {
@@ -564,36 +575,54 @@ void health_write_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
         return;
     }
 
-    n = send(watcher->fd, buffer, buffer_length, 0);
     ev_io_stop(loop, watcher);
-    if (n > 0) {
-        ((struct health_check_ev_io *)watcher)->buffer_length = 0;
-        ev_io_init(watcher, health_read_cb, watcher->fd, EV_READ);
-        ev_io_start(loop, watcher);
-        return;
+    if (buffer_length > 0) {
+        n = send(watcher->fd, buffer, buffer_length, 0);
+        if (n > 0) {
+            ev_io_init(watcher, control_read_cb, watcher->fd, EV_READ);
+            ev_io_start(loop, watcher);
+            return;
+        } else {
+            log_msg(WARN, "%s: error while sending health check response", __func__);
+        }
+    } else {
+        log_msg(WARN, "%s: nothing to send", __func__);
     }
-    log_msg(WARN, "%s: error while sending health check response", __func__);
     close(watcher->fd);
     free(watcher);
 }
 
-void health_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
-    char *buffer = ((struct health_check_ev_io *)watcher)->buffer;
-    int buffer_length = ((struct health_check_ev_io *)watcher)->buffer_length;
-    ssize_t read;
+void control_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
+    ssize_t bytes_in_buffer;
+    char buffer[CONTROL_REQUEST_BUF_SIZE];
+    char *delimiter_ptr = NULL;
+    int cmd_length = 0;
 
     if (EV_ERROR & revents) {
         log_msg(WARN, "%s: invalid event %s", __func__, strerror(errno));
         return;
     }
 
-    read = recv(watcher->fd, (buffer + buffer_length), (HEALTH_CHECK_BUF_SIZE - buffer_length), 0);
     ev_io_stop(loop, watcher);
-    if (read > 0) {
-        buffer_length += read;
-        buffer[buffer_length] = 0;
-        ((struct health_check_ev_io *)watcher)->buffer_length = buffer_length;
-        ev_io_init(watcher, health_write_cb, watcher->fd, EV_WRITE);
+    bytes_in_buffer = recv(watcher->fd, buffer, CONTROL_REQUEST_BUF_SIZE - 1, 0);
+    if (bytes_in_buffer > 0) {
+        while (buffer[bytes_in_buffer - 1] == '\n' || buffer[bytes_in_buffer - 1] == ' ') {
+            bytes_in_buffer--;
+        }
+        buffer[bytes_in_buffer] = 0;
+        delimiter_ptr = memchr(buffer, ' ', bytes_in_buffer);
+        cmd_length = bytes_in_buffer;
+        if (delimiter_ptr != NULL) {
+            cmd_length = delimiter_ptr - buffer;
+        }
+        if (STRLEN(HEALTH_CHECK_REQUEST) == cmd_length && strncmp(HEALTH_CHECK_REQUEST, buffer, cmd_length) == 0) {
+            if (delimiter_ptr != NULL) {
+                global.health_check_response_buf_length = snprintf(global.health_check_response_buf, HEALTH_CHECK_RESPONSE_BUF_SIZE, "%s:%s\n", HEALTH_CHECK_REQUEST, delimiter_ptr);
+            }
+            ((struct ev_io_control *)watcher)->buffer = global.health_check_response_buf;
+            ((struct ev_io_control *)watcher)->buffer_length = global.health_check_response_buf_length;
+        }
+        ev_io_init(watcher, control_write_cb, watcher->fd, EV_WRITE);
         ev_io_start(loop, watcher);
         return;
     }
@@ -603,23 +632,23 @@ void health_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     free(watcher);
 }
 
-void health_accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
+void control_accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     struct sockaddr_in client_addr;
     socklen_t client_addr_len = sizeof(client_addr);
     int client_socket;
-    struct ev_io *health_read_watcher;
+    struct ev_io *control_watcher;
 
     if (EV_ERROR & revents) {
         log_msg(WARN, "%s: invalid event %s", __func__, strerror(errno));
         return;
     }
 
-    health_read_watcher = (struct ev_io*) malloc (sizeof(struct health_check_ev_io));
-    if (health_read_watcher == NULL) {
+    control_watcher = (struct ev_io*) malloc (sizeof(struct ev_io_control));
+    ((struct ev_io_control *)control_watcher)->buffer_length = 0;
+    if (control_watcher == NULL) {
         log_msg(ERROR, "%s: malloc() failed %s", __func__, strerror(errno));
         return;
     }
-    ((struct health_check_ev_io *)health_read_watcher)->buffer_length = 0;
     client_socket = accept(watcher->fd, (struct sockaddr *)&client_addr, &client_addr_len);
 
     if (client_socket < 0) {
@@ -627,8 +656,8 @@ void health_accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) 
         return;
     }
 
-    ev_io_init(health_read_watcher, health_read_cb, client_socket, EV_READ);
-    ev_io_start(loop, health_read_watcher);
+    ev_io_init(control_watcher, control_read_cb, client_socket, EV_READ);
+    ev_io_start(loop, control_watcher);
 }
 
 // downstream health check functions
@@ -648,7 +677,7 @@ void ds_mark_down(struct ev_io *watcher) {
     if (global.downstream[id].alive == 1) {
         global.downstream[id].active_buffer_length = 0;
         global.downstream[id].alive = 0;
-        log_msg(TRACE, "%s downstream %d is down", __func__, id);
+        log_msg(DEBUG, "%s downstream %d is down", __func__, id);
     }
 }
 
@@ -672,7 +701,7 @@ void ds_health_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents)
     }
     if (global.downstream[id].alive == 0) {
         global.downstream[id].alive = 1;
-        log_msg(TRACE, "%s downstream %d is up", __func__, id);
+        log_msg(DEBUG, "%s downstream %d is up", __func__, id);
     }
 }
 
@@ -803,7 +832,7 @@ int main(int argc, char *argv[]) {
             case DATA_PORT_INDEX:
                 type = SOCK_DGRAM;
                 break;
-            case HEALTH_PORT_INDEX:
+            case CONTROL_PORT_INDEX:
                 type = SOCK_STREAM;
                 break;
         }
@@ -822,14 +851,14 @@ int main(int argc, char *argv[]) {
         }
 
         switch(i) {
-            case HEALTH_PORT_INDEX:
+            case CONTROL_PORT_INDEX:
                 optval = 1;
                 setsockopt(sockets[i], SOL_SOCKET, SO_REUSEADDR, &optval, sizeof optval);
                 if (listen(sockets[i], 5) < 0) {
                     log_msg(ERROR, "%s: listen() error %s", __func__, strerror(errno));
                     return(1);
                 }
-                ev_io_init(&socket_watcher[i], health_accept_cb, sockets[i], EV_READ);
+                ev_io_init(&socket_watcher[i], control_accept_cb, sockets[i], EV_READ);
                 break;
             case DATA_PORT_INDEX:
                 ev_io_init(&socket_watcher[i], udp_read_cb, sockets[i], EV_READ);

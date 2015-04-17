@@ -11,7 +11,7 @@ BASE_DS_PORT = 9100
 # data port for statsd router
 SR_DATA_PORT = 9000
 # health port for statsd router
-SR_HEALTH_PORT = 9001
+SR_CONTROL_PORT = 9001
 # location of config file for statsd router. THis config file is generated for each test run.
 SR_CONFIG_FILE = "/tmp/statsd-router.conf"
 # location of statsd router executable
@@ -20,8 +20,8 @@ SR_EXE_FILE = "../statsd-router"
 SR_DS_HEALTH_CHECK_INTERVAL = 3.0
 # how often statsd router flushes data to downstreams
 SR_DS_FLUSH_INTERVAL = 2.0
-# health check request for statsd router
-SR_HEALTH_CHECK_REQUEST = "ok"
+# health check request/response for statsd router
+SR_HEALTH_CHECK_REQUEST = "health"
 # how often statsd router pushes internal metric for data loss detection
 SR_DS_PING_INTERVAL = 10.0
 # prefix for internal metric for data loss detection
@@ -176,16 +176,15 @@ class OutputHandler < EM::Connection
     end
 end
 
-# module to check statsd router health
+# helper class to check statsd router health
 # currently statsd router health check is done via TCP port
-# request is echoed back
-module HealthClient
+class HealthClient < EM::Connection
+    def initialize(test_controller)
+        @test_controller = test_controller
+    end
+
     def receive_data(data)
-        if data != SR_HEALTH_CHECK_REQUEST
-            puts "!!! Health check failed: expected \"#{SR_HEALTH_CHECK_REQUEST}\", got \"#{data}\""
-        else
-            puts "*** health check ok"
-        end
+        @test_controller.notify({source: "statsd-router", text: data.strip()})
     end
 end
 
@@ -193,16 +192,15 @@ class StatsdRouterTest
     @@message_queue = []
 
     # function to check statsd router health
-    def health_check()
-        if @health_connection == nil || @health_connection.error?
-            if @health_connection != nil && @health_connection.error?
-                puts "!!! Error while connecting to health port, restarting connection"
-            end
-            EventMachine.connect('127.0.0.1', SR_HEALTH_PORT, HealthClient) do |conn|
-                @health_connection = conn
-            end
-        else
-            @health_connection.send_data(SR_HEALTH_CHECK_REQUEST)
+    def health_check_impl(str)
+        health_request = SR_HEALTH_CHECK_REQUEST
+        if str != nil && str != ''
+            health_request += " #{str}"
+            @health_response = "#{SR_HEALTH_CHECK_REQUEST}: #{str}"
+        end
+        @expected_events << [{source: "statsd-router", text: @health_response}]
+        EventMachine.connect('127.0.0.1', SR_CONTROL_PORT, HealthClient, self) do |conn|
+            conn.send_data(health_request)
         end
     end
 
@@ -291,8 +289,9 @@ class StatsdRouterTest
         Signal.trap("TERM") { EventMachine.stop }
         # let's generate config file for statsd router
         File.open(SR_CONFIG_FILE, "w") do |f|
+            f.puts("log_level=1")
             f.puts("data_port=#{SR_DATA_PORT}")
-            f.puts("health_port=#{SR_HEALTH_PORT}")
+            f.puts("control_port=#{SR_CONTROL_PORT}")
             f.puts("downstream_health_check_interval=#{SR_DS_HEALTH_CHECK_INTERVAL}")
             f.puts("downstream_flush_interval=#{SR_DS_FLUSH_INTERVAL}")
             f.puts("downstream_ping_interval=#{SR_DS_PING_INTERVAL}")
@@ -311,6 +310,7 @@ class StatsdRouterTest
             end
             # start statsd router
             EventMachine.popen("#{SR_EXE_FILE} #{SR_CONFIG_FILE}", OutputHandler, self)
+            sleep 1
             # and set timer to interrupt test in case of timeout
             EventMachine.add_timer(@timeout) do
                 abort("Timeout")
@@ -344,6 +344,7 @@ class StatsdRouterTest
         @expected_events = []
         @counter = 0
         @timeout = DEFAULT_TEST_TIMEOUT
+        @health_response = "health: up"
     end
 
     # this function is used to notify test of external events
@@ -386,7 +387,7 @@ class StatsdRouterTest
             if ds == nil
                 abort("Invalid downstream #{ds_num}")
             end
-            text = ds.healthy ? "TRACE ds_mark_down downstream #{ds_num} is down" : "TRACE ds_health_read_cb downstream #{ds_num} is up"
+            text = ds.healthy ? "DEBUG ds_mark_down downstream #{ds_num} is down" : "DEBUG ds_health_read_cb downstream #{ds_num} is up"
             event_list << {source: "statsd-router", text: text}
         end
         @expected_events << event_list
@@ -429,6 +430,10 @@ end
 
 def send_data(*args)
     @srt.test_sequence << [:send_data_impl, args]
+end
+
+def health_check(str)
+    @srt.test_sequence << [:health_check_impl, str]
 end
 
 # syntactic sugar end
