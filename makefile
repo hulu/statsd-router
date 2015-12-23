@@ -2,13 +2,23 @@ PKG_NAME=hulu-statsd-router
 PKG_VERSION=0.0.11
 PKG_DESCRIPTION="Metrics router for statsd cluster"
 
+CC=gcc
+CFLAGS=-c -Wall -O2
+LDFLAGS=-lev
+SOURCES=sr-control-server.c sr-health-client.c sr-init.c sr-main.c sr-util.c
+OBJECTS=$(SOURCES:.c=.o)
+EXECUTABLE=statsd-router
+
 .PHONY: all test clean
 
-all: bin
-bin:
-	gcc -Wall -O2 -o statsd-router statsd-router.c -lev
+all: $(SOURCES) $(EXECUTABLE)
+
+$(EXECUTABLE): $(OBJECTS) 
+	$(CC) $(OBJECTS) -o $@ $(LDFLAGS)
+.c.o:
+	$(CC) $(CFLAGS) $< -o $@
 clean:
-	rm -rf statsd-router build
+	rm -rf statsd-router *.o build
 pkg: bin
 	mkdir -p build/usr/local/bin/
 	cp statsd-router build/usr/local/bin/

@@ -1,4 +1,5 @@
 *.swp
+*.o
 statsd-router
 statsd-traffic-generator
 build
