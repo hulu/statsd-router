@@ -4,6 +4,8 @@
 #include <time.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <sys/types.h>
+#include <unistd.h>
 
 #include "sr-types.h"
 
