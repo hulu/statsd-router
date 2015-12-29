@@ -118,12 +118,12 @@ int find_downstream(char *line, unsigned long hash, int length) {
     return 1;
 }
 
-// simple hash code calculation borrowed from java
+// sdbm hashing (http://www.cse.yorku.ca/~oz/hash.html)
 unsigned long hash(char *s, int length) {
     unsigned long h = 0;
     int i;
     for (i = 0; i < length; i++) {
-        h = h * 31 + *(s + i);
+        h = (h << 6) + (h << 16) - h + *(s + i);
     }
     return h;
 }
