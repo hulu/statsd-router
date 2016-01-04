@@ -69,6 +69,8 @@ static void ds_health_connect_cb(struct ev_loop *loop, struct ev_io *watcher, in
     }
 }
 
+// TODO this code behaves oddly if the remote health server crashes after reading request
+
 void ds_health_check_timer_cb(struct ev_loop *loop, struct ev_periodic *p, int revents) {
     int i;
     int health_fd;
@@ -107,7 +109,6 @@ void ds_health_check_timer_cb(struct ev_loop *loop, struct ev_periodic *p, int r
                 continue;
             }
         } else {
-            n = connect(health_fd, (struct sockaddr *)&((health_client + i)->sa_in), sizeof((health_client + i)->sa_in));
             ev_io_init(watcher, ds_health_send_cb, health_fd, EV_WRITE);
         }
         ev_io_start(loop, watcher);
