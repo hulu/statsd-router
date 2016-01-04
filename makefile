@@ -4,7 +4,7 @@ PKG_DESCRIPTION="Metrics router for statsd cluster"
 
 CC=gcc
 CFLAGS=-c -Wall -O2
-LDFLAGS=-lev
+LDFLAGS=-lev -lpthread
 SOURCES=sr-control-server.c sr-health-client.c sr-init.c sr-main.c sr-util.c
 OBJECTS=$(SOURCES:.c=.o)
 EXECUTABLE=statsd-router

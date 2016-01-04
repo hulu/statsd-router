@@ -7,23 +7,21 @@ static int setnonblock(int fd) {
 }
 
 static void ds_mark_down(struct ev_io *watcher) {
-    int id = ((struct ev_io_id *)watcher)->id;
+    struct ds_health_client_s *health_client = (struct ds_health_client_s *)watcher;
     if (watcher->fd > 0) {
         close(watcher->fd);
         watcher->fd = -1;
     }
-    if (global.downstream[id].alive == 1) {
-        global.downstream[id].active_buffer_length = 0;
-        global.downstream[id].alive = 0;
-        log_msg(DEBUG, "%s downstream %d is down", __func__, id);
+    if (health_client->alive == 1) {
+        health_client->alive = 0;
+        log_msg(DEBUG, "%s downstream %d is down", __func__, health_client->id);
     }
 }
 
 static void ds_health_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
+    struct ds_health_client_s *health_client = (struct ds_health_client_s *)watcher;
     char buffer[DOWNSTREAM_HEALTH_CHECK_BUF_SIZE];
-    char *expected_response = "health: up\n";
     int health_fd = watcher->fd;
-    int id = ((struct ev_io_id *)watcher)->id;
     ev_io_stop(loop, watcher);
     int n = recv(health_fd, buffer, DOWNSTREAM_HEALTH_CHECK_BUF_SIZE, 0);
     if (n <= 0) {
@@ -32,23 +30,20 @@ static void ds_health_read_cb(struct ev_loop *loop, struct ev_io *watcher, int r
         return;
     }
     buffer[n] = 0;
-    // TODO strcmp() -> memcmp()
-    if (strcmp(buffer, expected_response) != 0) {
+    if (memcmp(buffer, HEALTH_CHECK_UP_RESPONSE, STRLEN(HEALTH_CHECK_UP_RESPONSE)) != 0) {
         ds_mark_down(watcher);
         return;
     }
-    if (global.downstream[id].alive == 0) {
-        global.downstream[id].alive = 1;
-        log_msg(DEBUG, "%s downstream %d is up", __func__, id);
+    if (health_client->alive == 0) {
+        health_client->alive = 1;
+        log_msg(DEBUG, "%s downstream %d is up", __func__, health_client->id);
     }
 }
 
 static void ds_health_send_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
-    char *health_check_request = "health";
-    int health_check_request_length = strlen(health_check_request);
     int health_fd = watcher->fd;
     ev_io_stop(loop, watcher);
-    int n = send(health_fd, health_check_request, health_check_request_length, 0);
+    int n = send(health_fd, HEALTH_CHECK_REQUEST, STRLEN(HEALTH_CHECK_REQUEST), 0);
     if (n <= 0) {
         log_msg(WARN, "%s: send() failed %s", __func__, strerror(errno));
         ds_mark_down(watcher);
@@ -78,9 +73,13 @@ void ds_health_check_timer_cb(struct ev_loop *loop, struct ev_periodic *p, int r
     int i;
     int health_fd;
     struct ev_io *watcher;
+    struct ev_periodic_health_client_s *ev_periodic_hc = (struct ev_periodic_health_client_s *)p;
+    int downstream_num = ev_periodic_hc->downstream_num;
+    struct ds_health_client_s *health_client = ev_periodic_hc->health_client;
+    int n = 0;
 
-    for (i = 0; i < global.downstream_num; i++) {
-        watcher = (struct ev_io *)(&global.downstream[i].health_watcher);
+    for (i = 0; i < downstream_num; i++) {
+        watcher = (struct ev_io *)(health_client + i);
         health_fd = watcher->fd;
         if (health_fd > 0 && ev_is_active(watcher)) {
             log_msg(WARN, "%s: previous health check request was not completed for downstream %d", __func__, i);
@@ -99,7 +98,8 @@ void ds_health_check_timer_cb(struct ev_loop *loop, struct ev_periodic *p, int r
                 log_msg(WARN, "%s: setnonblock() failed %s", __func__, strerror(errno));
                 continue;
             }
-            if (connect(health_fd, (struct sockaddr *)(&global.downstream[i].sa_in_health), sizeof(global.downstream[i].sa_in_health)) == -1 && errno == EINPROGRESS) {
+            n = connect(health_fd, (struct sockaddr *)&((health_client + i)->sa_in), sizeof((health_client + i)->sa_in));
+            if (n == -1 && errno == EINPROGRESS) {
                 ev_io_init(watcher, ds_health_connect_cb, health_fd, EV_WRITE);
             } else {
                 log_msg(WARN, "%s: connect() failed %s", __func__, strerror(errno));
@@ -107,6 +107,7 @@ void ds_health_check_timer_cb(struct ev_loop *loop, struct ev_periodic *p, int r
                 continue;
             }
         } else {
+            n = connect(health_fd, (struct sockaddr *)&((health_client + i)->sa_in), sizeof((health_client + i)->sa_in));
             ev_io_init(watcher, ds_health_send_cb, health_fd, EV_WRITE);
         }
         ev_io_start(loop, watcher);

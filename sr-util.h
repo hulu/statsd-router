@@ -6,6 +6,7 @@
 #include <stdarg.h>
 #include <sys/types.h>
 #include <unistd.h>
+#include <sys/syscall.h>
 
 #include "sr-types.h"
 
@@ -19,6 +20,8 @@ enum log_level_e {
     WARN,
     ERROR
 };
+
+int log_level;
 
 void log_msg(int level, char *format, ...);
 

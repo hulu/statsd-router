@@ -14,14 +14,14 @@ void log_msg(int level, char *format, ...) {
     char buffer[LOG_BUF_SIZE];
     int l = 0;
 
-    if (level < global.log_level) {
+    if (level < log_level) {
         return;
     }
     va_start(args, format);
     time(&t);
     tinfo = localtime(&t);
     l = strftime(buffer, LOG_BUF_SIZE, "%Y-%m-%d %H:%M:%S", tinfo);
-    l += sprintf(buffer + l, " %d %s ", getpid(), log_level_name(level));
+    l += sprintf(buffer + l, " %ld %s ", syscall(SYS_gettid), log_level_name(level));
     vsnprintf(buffer + l, LOG_BUF_SIZE - l, format, args);
     va_end(args);
     fprintf(stdout, "%s\n", buffer);

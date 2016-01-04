@@ -19,9 +19,9 @@
 
 // this function flushes data to downstream
 void ds_flush_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
-    int id = ((struct ev_io_id *)watcher)->id;
     int bytes_send;
-    int flush_buffer_idx = global.downstream[id].flush_buffer_idx;
+    struct downstream_s *ds = (struct downstream_s *)watcher;
+    int flush_buffer_idx = ds->flush_buffer_idx;
 
     if (EV_ERROR & revents) {
         log_msg(WARN, "%s: invalid event %s", __func__, strerror(errno));
@@ -29,16 +29,16 @@ void ds_flush_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     }
 
     bytes_send = sendto(watcher->fd,
-        global.downstream[id].buffer + flush_buffer_idx * DOWNSTREAM_BUF_SIZE,
-        global.downstream[id].buffer_length[flush_buffer_idx],
+        ds->buffer + flush_buffer_idx * DOWNSTREAM_BUF_SIZE,
+        ds->buffer_length[flush_buffer_idx],
         0,
-        (struct sockaddr *) (&global.downstream[id].sa_in_data),
-        sizeof(global.downstream[id].sa_in_data));
+        (struct sockaddr *)&(ds->sa_in_data),
+        sizeof(ds->sa_in_data));
     // update flush time
-    global.downstream[id].last_flush_time = ev_now(loop);
-    global.downstream[id].buffer_length[flush_buffer_idx] = 0;
-    global.downstream[id].flush_buffer_idx = (flush_buffer_idx + 1) % DOWNSTREAM_BUF_NUM;
-    if (global.downstream[id].flush_buffer_idx == global.downstream[id].active_buffer_idx) {
+    ds->last_flush_time = ev_now(loop);
+    ds->buffer_length[flush_buffer_idx] = 0;
+    ds->flush_buffer_idx = (flush_buffer_idx + 1) % DOWNSTREAM_BUF_NUM;
+    if (ds->flush_buffer_idx == ds->active_buffer_idx) {
         ev_io_stop(loop, watcher);
     }
     if (bytes_send < 0) {
@@ -47,8 +47,8 @@ void ds_flush_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
 }
 
 // this function switches active and flush buffers, registers handler to send data when socket would be ready
-void ds_schedule_flush(struct downstream_s *ds) {
-    struct ev_io *watcher = NULL;
+void ds_schedule_flush(struct downstream_s *ds, struct ev_loop *loop) {
+    struct ev_io *watcher = (struct ev_io *)ds;
     int new_active_buffer_idx = (ds->active_buffer_idx + 1) % DOWNSTREAM_BUF_NUM;
     // if active_buffer_idx == flush_buffer_idx this means that all previous
     // flushes are done (no filled buffers in the queue) and we need to schedule new one
@@ -66,17 +66,16 @@ void ds_schedule_flush(struct downstream_s *ds) {
     ds->active_buffer_length = 0;
     ds->active_buffer_idx = new_active_buffer_idx;
     if (need_to_schedule_flush) {
-        watcher = (struct ev_io *)&(ds->flush_watcher);
-        ev_io_init(watcher, ds_flush_cb, watcher->fd, EV_WRITE);
-        ev_io_start(ev_default_loop(0), watcher);
+        ev_io_init(watcher, ds_flush_cb, ds->root->socket_out, EV_WRITE);
+        ev_io_start(loop, watcher);
     }
 }
 
-void push_to_downstream(struct downstream_s *ds, char *line, int length) {
+void push_to_downstream(struct downstream_s *ds, char *line, int length, struct ev_loop *loop) {
     // check if we new data would fit in buffer
     if (ds->active_buffer_length + length > DOWNSTREAM_BUF_SIZE) {
         // buffer is full, let's flush data
-        ds_schedule_flush(ds);
+        ds_schedule_flush(ds, loop);
     }
     // let's add new data to buffer
     memcpy(ds->active_buffer + ds->active_buffer_length, line, length);
@@ -85,31 +84,31 @@ void push_to_downstream(struct downstream_s *ds, char *line, int length) {
 }
 
 // this function pushes data to appropriate downstream using metrics name hash
-int find_downstream(char *line, unsigned long hash, int length) {
+int find_downstream(char *line, unsigned long hash, int length, int downstream_num, struct downstream_s *downstream, struct ev_loop *loop) {
     // array to store downstreams for consistent hashing
-    int downstream[global.downstream_num];
+    int ds_index[downstream_num];
     int i, j, k;
-    struct downstream_s *ds;
 
     log_msg(TRACE, "%s: hash = %lx, length = %d, line = %.*s", __func__, hash, length, length, line);
     // array is ordered before reshuffling
-    for (i = 0; i < global.downstream_num; i++) {
-        downstream[i] = i;
+    for (i = 0; i < downstream_num; i++) {
+        ds_index[i] = i;
     }
     // we have most config.downstream_num downstreams to cycle through
-    for (i = global.downstream_num; i > 0; i--) {
+    for (i = downstream_num; i > 0; i--) {
         j = hash % i;
-        k = downstream[j];
+        k = ds_index[j];
         // k is downstream number for this metric, is it alive?
-        ds = &(global.downstream[k]);
-        if (ds->alive) {
+        if ((downstream + k)->health_client->alive) {
             log_msg(TRACE, "%s: pushing to downstream %d", __func__, k);
-            push_to_downstream(ds, line, length);
+            push_to_downstream(downstream + k, line, length, loop);
             return 0;
+        } else {
+            (downstream + k)->active_buffer_length = 0;
         }
         if (j != i - 1) {
-            downstream[j] = downstream[i - 1];
-            downstream[i - 1] = k;
+            ds_index[j] = ds_index[i - 1];
+            ds_index[i - 1] = k;
         }
         // quasi random number sequence, distribution is bad without this trick
         hash = (hash * 7 + 5) / 3;
@@ -129,7 +128,7 @@ unsigned long hash(char *s, int length) {
 }
 
 // function to process single metrics line
-int process_data_line(char *line, int length) {
+int process_data_line(char *line, int length, int downstream_num, struct downstream_s *downstream, struct ev_loop *loop) {
     char *colon_ptr = memchr(line, ':', length);
     // if ':' wasn't found this is not valid statsd metric
     if (colon_ptr == NULL) {
@@ -137,7 +136,7 @@ int process_data_line(char *line, int length) {
         log_msg(WARN, "%s: invalid metric %s", __func__, line);
         return 1;
     }
-    find_downstream(line, hash(line, (colon_ptr - line)), length);
+    find_downstream(line, hash(line, (colon_ptr - line)), length, downstream_num, downstream, loop);
     return 0;
 }
 
@@ -148,6 +147,8 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     char *buffer_ptr = buffer;
     char *delimiter_ptr = buffer;
     int line_length = 0;
+    int downstream_num = ((struct ev_io_ds_s *)watcher)->downstream_num;
+    struct downstream_s *downstream = ((struct ev_io_ds_s *)watcher)->downstream;
 
     if (EV_ERROR & revents) {
         log_msg(WARN, "%s: invalid event %s", __func__, strerror(errno));
@@ -173,7 +174,7 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
             // so lines with length less than 6 can be ignored
             if (line_length > 5 && line_length < DOWNSTREAM_BUF_SIZE) {
                 // if line has valid length let's process it
-                process_data_line(buffer_ptr, line_length);
+                process_data_line(buffer_ptr, line_length, downstream_num, downstream, loop);
             } else {
                 log_msg(WARN, "%s: invalid length %d of metric %.*s", __func__, line_length, line_length, buffer_ptr);
             }
@@ -188,119 +189,168 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
 void ds_flush_timer_cb(struct ev_loop *loop, struct ev_periodic *p, int revents) {
     int i;
     ev_tstamp now = ev_now(loop);
-    struct downstream_s *ds;
+    struct downstream_s *downstream = ((struct ev_periodic_ds_s *)p)->downstream;
+    int downstream_num = ((struct ev_periodic_ds_s *)p)->downstream_num;
 
-    for (i = 0; i < global.downstream_num; i++) {
-        ds = &(global.downstream[i]);
-        if (now - ds->last_flush_time > global.downstream_flush_interval &&
-                ds->active_buffer_length > 0) {
-            ds_schedule_flush(ds);
+    for (i = 0; i < downstream_num; i++) {
+        if (now - (downstream + i)->last_flush_time > ((struct ev_periodic_ds_s *)p)->interval &&
+                (downstream + i)->active_buffer_length > 0) {
+            ds_schedule_flush(downstream + i, loop);
         }
     }
 }
 
 void ping_cb(struct ev_loop *loop, struct ev_periodic *p, int revents) {
     int i = 0;
+    int n = 0;
     int count = 0;
     char buffer[METRIC_SIZE];
     struct downstream_s *ds;
     int packets = 0;
     int traffic = 0;
+    int downstream_num = ((struct ev_periodic_ds_s *)p)->downstream_num;
+    struct downstream_s *downstream = ((struct ev_periodic_ds_s *)p)->downstream;
+    char *alive_downstream_metric_name = ((struct ev_periodic_ds_s *)p)->string;
 
-    for (i = 0; i < global.downstream_num; i++) {
-        ds = &global.downstream[i];
-        if ((ds->health_watcher).super.fd > 0) {
-            push_to_downstream(ds, ds->per_downstream_counter_metric, ds->per_downstream_counter_metric_length);
+    for (i = 0; i < downstream_num; i++) {
+        ds = downstream + i;
+        if (ds->health_client->alive) {
+            push_to_downstream(ds, ds->per_downstream_counter_metric, ds->per_downstream_counter_metric_length, loop);
             count++;
         }
         traffic = ds->downstream_traffic_counter;
         packets = ds->downstream_packet_counter;
         ds->downstream_traffic_counter = 0;
         ds->downstream_packet_counter = 0;
-        sprintf(buffer, "%s:%d|c\n%s:%d|c\n",
+        n = sprintf(buffer, "%s:%d|c\n%s:%d|c\n",
             ds->downstream_traffic_counter_metric, traffic,
             ds->downstream_packet_counter_metric, packets);
-        process_data_line(buffer, strlen(buffer));
+        process_data_line(buffer, n, downstream_num, downstream, loop);
     }
-    sprintf(buffer, "%s:%d|g\n", global.alive_downstream_metric_name, count);
-    process_data_line(buffer, strlen(buffer));
+    n = sprintf(buffer, "%s:%d|g\n", alive_downstream_metric_name, count);
+    process_data_line(buffer, n, downstream_num, downstream, loop);
 }
 
-// program entry point
-int main(int argc, char *argv[]) {
-    struct ev_loop *loop = ev_default_loop(0);
-    int sockets[PORTS_NUM];
-    struct sockaddr_in addr[PORTS_NUM];
-    struct ev_io socket_watcher[PORTS_NUM];
-    struct ev_periodic ds_health_check_timer_watcher;
-    struct ev_periodic ds_flush_timer_watcher;
-    struct ev_periodic ping_timer_watcher;
-    int i;
-    int type;
-    int optval;
-    ev_tstamp ds_health_check_timer_at = 0.0;
+void *data_pipe_thread(void *args) {
+    struct sockaddr_in addr;
+    struct ev_loop *loop = NULL;
+    struct ev_io_ds_s socket_watcher;
+    struct ev_periodic_ds_s ds_flush_timer_watcher;
+    struct ev_periodic_ds_s ping_timer_watcher;
     ev_tstamp ds_flush_timer_at = 0.0;
     ev_tstamp ping_timer_at = 0.0;
+    int optval = 1;
+    int socket_in = -1;
+    sr_config_s *config = (sr_config_s *)args;
+    ev_tstamp downstream_flush_interval = config->downstream_flush_interval;
+    int downstream_num = config->downstream_num;
+    struct downstream_s *downstream = config->downstream + config->threads_num * config->id;
+    int i = 0;
+
+    socket_in = socket(PF_INET, SOCK_DGRAM, 0);
+    if (socket_in < 0 ) {
+        log_msg(ERROR, "%s: socket_in socket() error %s", __func__, strerror(errno));
+        return NULL;
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(config->data_port);
+    addr.sin_addr.s_addr = INADDR_ANY;
+
+    if (setsockopt(socket_in, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)) != 0) {
+        log_msg(ERROR, "%s: setsockopt() failed %s", __func__, strerror(errno));
+        return NULL;
+    }
+
+    if (bind(socket_in, (struct sockaddr*) &addr, sizeof(addr)) != 0) {
+        log_msg(ERROR, "%s: bind() failed %s", __func__, strerror(errno));
+        return NULL;
+    }
+
+    socket_watcher.downstream_num = downstream_num;
+    socket_watcher.downstream = downstream;
+    socket_watcher.socket_out = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (socket_watcher.socket_out < 0 ) {
+        log_msg(ERROR, "%s: socket_out socket() error %s", __func__, strerror(errno));
+        return NULL;
+    }
+    for (i = 0; i < downstream_num; i++) {
+        (downstream + i)->root = &socket_watcher;
+    }
+    loop = ev_loop_new(0);
+    ev_io_init((struct ev_io *)(&socket_watcher), udp_read_cb, socket_in, EV_READ);
+    ev_io_start(loop, (struct ev_io *)(&socket_watcher));
+
+    ds_flush_timer_watcher.downstream_num = downstream_num;
+    ds_flush_timer_watcher.downstream = downstream;
+    ds_flush_timer_watcher.interval = downstream_flush_interval;
+    ev_periodic_init ((struct ev_periodic *)(&ds_flush_timer_watcher), ds_flush_timer_cb, ds_flush_timer_at, downstream_flush_interval, 0);
+    ev_periodic_start (loop, (struct ev_periodic *)(&ds_flush_timer_watcher));
+
+    ping_timer_watcher.downstream_num = downstream_num;
+    ping_timer_watcher.downstream = downstream;
+    ev_periodic_init((struct ev_periodic *)&ping_timer_watcher, ping_cb, ping_timer_at, config->downstream_ping_interval, 0);
+    ev_periodic_start (loop, (struct ev_periodic *)&ping_timer_watcher);
+
+    ev_loop(loop, 0);
+    log_msg(ERROR, "%s: ev_loop() exited", __func__);
+    return NULL;
+}
+
+int main(int argc, char *argv[]) {
+    struct ev_loop *loop = ev_loop_new(0);
+    struct sockaddr_in addr;
+    struct ev_io_control control_socket_watcher;
+    struct ev_periodic_health_client_s ds_health_check_timer_watcher;
+    int i;
+    int optval = 1;
+    int control_socket = -1;
+    ev_tstamp ds_health_check_timer_at = 0.0;
+    sr_config_s config;
 
    if (argc != 2) {
         fprintf(stdout, "Usage: %s config.file\n", argv[0]);
         exit(1);
     }
-    if (init_config(argv[1]) != 0) {
+    if (init_config(argv[1], &config) != 0) {
         log_msg(ERROR, "%s: init_config() failed", __func__);
         exit(1);
     }
 
-    for (i = 0; i < PORTS_NUM; i++) {
-        switch(i) {
-            case DATA_PORT_INDEX:
-                type = SOCK_DGRAM;
-                break;
-            case CONTROL_PORT_INDEX:
-                type = SOCK_STREAM;
-                break;
-        }
-        if ((sockets[i] = socket(PF_INET, type, 0)) < 0 ) {
-            log_msg(ERROR, "%s: socket() error %s", __func__, strerror(errno));
-            return(1);
-        }
-        bzero(&addr[i], sizeof(addr[i]));
-        addr[i].sin_family = AF_INET;
-        addr[i].sin_port = htons(global.port[i]);
-        addr[i].sin_addr.s_addr = INADDR_ANY;
+    control_socket = socket(PF_INET, SOCK_STREAM, 0);
+    if (control_socket < 0 ) {
+        log_msg(ERROR, "%s: socket() error %s", __func__, strerror(errno));
+        return(1);
+    }
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(config.control_port);
+    addr.sin_addr.s_addr = INADDR_ANY;
 
-        if (bind(sockets[i], (struct sockaddr*) &addr[i], sizeof(addr[i])) != 0) {
-            log_msg(ERROR, "%s: bind() failed %s", __func__, strerror(errno));
-            return(1);
-        }
-
-        switch(i) {
-            case CONTROL_PORT_INDEX:
-                optval = 1;
-                setsockopt(sockets[i], SOL_SOCKET, SO_REUSEADDR, &optval, sizeof optval);
-                if (listen(sockets[i], 5) < 0) {
-                    log_msg(ERROR, "%s: listen() error %s", __func__, strerror(errno));
-                    return(1);
-                }
-                ev_io_init(&socket_watcher[i], control_accept_cb, sockets[i], EV_READ);
-                break;
-            case DATA_PORT_INDEX:
-                ev_io_init(&socket_watcher[i], udp_read_cb, sockets[i], EV_READ);
-                break;
-        }
-        ev_io_start(loop, &socket_watcher[i]);
+    if (bind(control_socket, (struct sockaddr*)&addr, sizeof(addr)) != 0) {
+        log_msg(ERROR, "%s: bind() failed %s", __func__, strerror(errno));
+        return(1);
     }
 
-    ev_periodic_init (&ds_health_check_timer_watcher, ds_health_check_timer_cb, ds_health_check_timer_at, global.downstream_health_check_interval, 0);
-    ev_periodic_start (loop, &ds_health_check_timer_watcher);
-    ev_periodic_init (&ds_flush_timer_watcher, ds_flush_timer_cb, ds_flush_timer_at, global.downstream_flush_interval, 0);
-    ev_periodic_start (loop, &ds_flush_timer_watcher);
-    ev_periodic_init(&ping_timer_watcher, ping_cb, ping_timer_at, global.downstream_ping_interval, 0);
-    ev_periodic_start (loop, &ping_timer_watcher);
+    setsockopt(control_socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
+    if (listen(control_socket, 5) < 0) {
+        log_msg(ERROR, "%s: listen() error %s", __func__, strerror(errno));
+        return(1);
+    }
+    control_socket_watcher.health_response = config.health_check_response_buf;
+    control_socket_watcher.health_response_len = &config.health_check_response_buf_length;
+    ev_io_init((struct ev_io *)&control_socket_watcher, control_accept_cb, control_socket, EV_READ);
+    ev_io_start(loop, (struct ev_io *)&control_socket_watcher);
+
+    ds_health_check_timer_watcher.downstream_num = config.downstream_num;
+    ds_health_check_timer_watcher.health_client = config.health_client;
+    ev_periodic_init((struct ev_periodic *)&ds_health_check_timer_watcher, ds_health_check_timer_cb, ds_health_check_timer_at, config.downstream_health_check_interval, 0);
+    ev_periodic_start(loop, (struct ev_periodic *)&ds_health_check_timer_watcher);
+
+    for (i = 0; i < config.threads_num; i++) {
+    }
 
     ev_loop(loop, 0);
     log_msg(ERROR, "%s: ev_loop() exited", __func__);
     return(0);
 }
-
-

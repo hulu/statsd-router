@@ -30,6 +30,7 @@
 #include <stdarg.h>
 #include <unistd.h>
 #include <errno.h>
+#include <pthread.h>
 
 #include "sr-util.h"
 #include "sr-types.h"
@@ -47,18 +48,7 @@
 #define CONTROL_REQUEST_BUF_SIZE 32
 #define LOG_BUF_SIZE 2048
 
-// 3 last bytes of the metric name hash are used to do preliminary filtering
-// those 3 bytes are used as an index and appropriate counter is incremented
-// if counter value is over threshold metric is checked for excessive rate
-#define HASH_MASK 0xffffff
-
-// this structure is shared by all statsd-router processes
-struct shared_s {
-    // rough rate counters, partitioning is done using last 3 bytes of metric name hash
-    unsigned int rate_counter[HASH_MASK];
-};
-
-int init_config(char *filename);
+int init_config(char *filename, sr_config_s *config);
 void control_accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents);
 void ds_health_check_timer_cb(struct ev_loop *loop, struct ev_periodic *p, int revents);
 
