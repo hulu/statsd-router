@@ -243,7 +243,7 @@ void *data_pipe_thread(void *args) {
     sr_config_s *config = (sr_config_s *)args;
     ev_tstamp downstream_flush_interval = config->downstream_flush_interval;
     int downstream_num = config->downstream_num;
-    struct downstream_s *downstream = config->downstream + config->threads_num * config->id;
+    struct downstream_s *downstream = config->downstream + downstream_num * config->id;
     int i = 0;
 
     socket_in = socket(PF_INET, SOCK_DGRAM, 0);
