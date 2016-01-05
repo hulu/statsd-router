@@ -89,7 +89,7 @@ struct ev_io_ds_s {
 #define HEALTH_CHECK_RESPONSE_BUF_SIZE 32
 #define HEALTH_CHECK_UP_RESPONSE "health: up\n"
 
-typedef struct {
+struct sr_config_s {
     // data port is used to recieve metrics
     int data_port;
     // control port is used for health checks etc
@@ -113,6 +113,6 @@ typedef struct {
     int id;
     struct ds_health_client_s *health_client;
     pthread_t *thread;
-} sr_config_s;
+};
 
 #endif

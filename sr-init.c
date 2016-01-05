@@ -17,7 +17,7 @@ static int init_sockaddr_in(struct sockaddr_in *sa_in, char *host, char *port) {
 }
 
 // function to init downstreams from config file line
-static int init_downstream(sr_config_s *config) {
+static int init_downstream(struct sr_config_s *config) {
     int i = 0;
     int j = 0;
     int k = 0;
@@ -130,7 +130,7 @@ static int init_downstream(sr_config_s *config) {
 }
 
 // function to parse single line from config file
-static int process_config_line(char *line, sr_config_s *config) {
+static int process_config_line(char *line, struct sr_config_s *config) {
     int n;
     // valid line should contain '=' symbol
     char *value_ptr = strchr(line, '=');
@@ -187,7 +187,7 @@ static void on_sigint(int sig) {
     exit(0);
 }
 
-static int verify_config(sr_config_s *config) {
+static int verify_config(struct sr_config_s *config) {
     int failures = 0;
     if (config->data_port == 0) {
         failures++;
@@ -229,7 +229,7 @@ static int verify_config(sr_config_s *config) {
 }
 
 // this function loads config file and initializes config fields
-int init_config(char *filename, sr_config_s *config) {
+int init_config(char *filename, struct sr_config_s *config) {
     size_t n = 0;
     int l = 0;
     int failures = 0;

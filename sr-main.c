@@ -240,7 +240,7 @@ void *data_pipe_thread(void *args) {
     ev_tstamp ping_timer_at = 0.0;
     int optval = 1;
     int socket_in = -1;
-    sr_config_s *config = (sr_config_s *)args;
+    struct sr_config_s *config = (struct sr_config_s *)args;
     ev_tstamp downstream_flush_interval = config->downstream_flush_interval;
     int downstream_num = config->downstream_num;
     struct downstream_s *downstream = config->downstream + downstream_num * config->id;
@@ -306,7 +306,7 @@ int main(int argc, char *argv[]) {
     int optval = 1;
     int control_socket = -1;
     ev_tstamp ds_health_check_timer_at = 0.0;
-    sr_config_s config;
+    struct sr_config_s config;
 
    if (argc != 2) {
         fprintf(stdout, "Usage: %s config.file\n", argv[0]);

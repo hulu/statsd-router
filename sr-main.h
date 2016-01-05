@@ -48,7 +48,7 @@
 #define CONTROL_REQUEST_BUF_SIZE 32
 #define LOG_BUF_SIZE 2048
 
-int init_config(char *filename, sr_config_s *config);
+int init_config(char *filename, struct sr_config_s *config);
 void control_accept_cb(struct ev_loop *loop, struct ev_io *watcher, int revents);
 void ds_health_check_timer_cb(struct ev_loop *loop, struct ev_periodic *p, int revents);
 
