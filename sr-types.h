@@ -14,12 +14,6 @@ struct ev_io_control {
     int *health_response_len;;
 };
 
-// Size of buffer for outgoing packets. Should be below MTU.
-// TODO Probably should be configured via configuration file?
-#define DOWNSTREAM_BUF_SIZE 1450
-#define DOWNSTREAM_BUF_NUM 1024
-#define METRIC_SIZE 256
-
 struct ds_health_client_s {
     // ev_io structure used for downstream health checks
     struct ev_io super;
@@ -30,6 +24,12 @@ struct ds_health_client_s {
     // bit flag if this downstream is alive
     unsigned int alive:1;
 };
+
+// Size of buffer for outgoing packets. Should be below MTU.
+// TODO Probably should be configured via configuration file?
+#define DOWNSTREAM_BUF_SIZE 1450
+#define DOWNSTREAM_BUF_NUM 1024
+#define METRIC_SIZE 256
 
 struct ev_io_ds_s;
 
@@ -89,13 +89,6 @@ struct ev_io_ds_s {
 #define HEALTH_CHECK_RESPONSE_BUF_SIZE 32
 #define HEALTH_CHECK_UP_RESPONSE "health: up\n"
 
-// statsd-router ports are stored in array and accessed using indexes below
-#define DATA_PORT_INDEX 0
-#define CONTROL_PORT_INDEX 1
-
-// number of ports used by statsd-router
-#define PORTS_NUM 2
-
 typedef struct {
     // data port is used to recieve metrics
     int data_port;
@@ -119,6 +112,7 @@ typedef struct {
     int health_check_response_buf_length;
     int id;
     struct ds_health_client_s *health_client;
+    pthread_t *thread;
 } sr_config_s;
 
 #endif

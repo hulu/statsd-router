@@ -101,7 +101,7 @@ static int init_downstream(sr_config_s *config) {
             }
         }
         for (k = 0; k < config->threads_num; k++) {
-            ds = config->downstream + k * config->threads_num + i;
+            ds = config->downstream + k * config->downstream_num + i;
             ds->last_flush_time = ev_time();
             ds->active_buffer_idx = 0;
             ds->active_buffer = ds->buffer;

@@ -26,6 +26,8 @@ SR_HEALTH_CHECK_REQUEST = "health"
 SR_DS_PING_INTERVAL = 10.0
 # prefix for internal metric for data loss detection
 SR_PING_PREFIX = "statsd-cluster-test"
+# how many data pipe threads should be run by the stasd-router
+THREADS_NUM = 2
 
 # test exit code in case of success
 SUCCESS_EXIT_STATUS = 0
@@ -145,6 +147,7 @@ class StatsdMock
         @last_start_time = now
         @last_health_check_time = now
         @health_server = EventMachine::start_server('0.0.0.0', @health_port, HealthServer, @connections, self)
+        puts "downstream #{@num} started" if $verbose
     end
 
     def stop
@@ -155,6 +158,7 @@ class StatsdMock
         @connections.each do |conn|
             conn.close_connection
         end
+        puts "downstream #{@num} stopped" if $verbose
     end
 
     def get_all
@@ -209,7 +213,7 @@ class StatsdRouterTest
     def hashring(name)
         # 1st we calculate hash name for the name (algorithm borrowed from java String class)
         hash = 0
-        name.each_byte {|b| hash = (hash * 31 + b) & 0xffffffffffffffff}
+        name.each_byte {|b| hash = ((hash << 6) + (hash << 16) - hash + b) & 0xffffffffffffffff}
         # next we create array with downstream numbers and shuffle it using hash value
         a = (0...DOWNSTREAM_NUM).to_a
         a.reverse.each do |i|
@@ -264,6 +268,7 @@ class StatsdRouterTest
 
     # this function sends data during test execution
     def send_data_impl(*args)
+        puts "send(#{args[0]})" if $verbose
         event_list = []
         data = []
         args[0].each do |x|
@@ -296,6 +301,7 @@ class StatsdRouterTest
             f.puts("downstream_flush_interval=#{SR_DS_FLUSH_INTERVAL}")
             f.puts("downstream_ping_interval=#{SR_DS_PING_INTERVAL}")
             f.puts("ping_prefix=#{SR_PING_PREFIX}")
+            f.puts("threads_num=#{THREADS_NUM}")
             f.puts("downstream=#{(0...DOWNSTREAM_NUM).to_a.map {|x| BASE_DS_PORT + 2 * x}.map {|x| "127.0.0.1:#{x}:#{x + 1}"}.join(',')}")
         end
         @downstream = []
@@ -381,6 +387,7 @@ class StatsdRouterTest
 
     # function to toggle downsream state
     def toggle_ds_impl(ds_list)
+        puts "*** toggle(#{ds_list})" if $verbose
         event_list = []
         ds_list.each do |ds_num|
             ds = @downstream[ds_num]
@@ -393,7 +400,13 @@ class StatsdRouterTest
         @expected_events << event_list
         ds_list.each do |ds_num|
             ds = @downstream[ds_num]
-            ds.healthy ? ds.stop() : ds.start()
+            if ds.healthy
+                puts "stopping downstream #{ds_num}" if $verbose
+                ds.stop()
+            else
+                puts "starting downstream #{ds_num}" if $verbose
+                ds.start()
+            end
         end
     end
 

@@ -140,7 +140,6 @@ int process_data_line(char *line, int length, int downstream_num, struct downstr
     return 0;
 }
 
-
 void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
     char buffer[DATA_BUF_SIZE];
     ssize_t bytes_in_buffer;
@@ -289,6 +288,7 @@ void *data_pipe_thread(void *args) {
 
     ping_timer_watcher.downstream_num = downstream_num;
     ping_timer_watcher.downstream = downstream;
+    ping_timer_watcher.string = config->alive_downstream_metric_name;
     ev_periodic_init((struct ev_periodic *)&ping_timer_watcher, ping_cb, ping_timer_at, config->downstream_ping_interval, 0);
     ev_periodic_start (loop, (struct ev_periodic *)&ping_timer_watcher);
 
@@ -337,6 +337,12 @@ int main(int argc, char *argv[]) {
         log_msg(ERROR, "%s: listen() error %s", __func__, strerror(errno));
         return(1);
     }
+    config.thread = (pthread_t *)malloc(sizeof(pthread_t) * config.threads_num);
+    if (config.thread == NULL) {
+        log_msg(ERROR, "%s: config.thread malloc() failed %s", __func__, strerror(errno));
+        return(1);
+    }
+
     control_socket_watcher.health_response = config.health_check_response_buf;
     control_socket_watcher.health_response_len = &config.health_check_response_buf_length;
     ev_io_init((struct ev_io *)&control_socket_watcher, control_accept_cb, control_socket, EV_READ);
@@ -348,6 +354,8 @@ int main(int argc, char *argv[]) {
     ev_periodic_start(loop, (struct ev_periodic *)&ds_health_check_timer_watcher);
 
     for (i = 0; i < config.threads_num; i++) {
+        config.id = i;
+        pthread_create(config.thread + i, NULL, data_pipe_thread, (void *)(&config));
     }
 
     ev_loop(loop, 0);
