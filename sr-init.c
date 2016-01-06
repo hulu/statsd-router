@@ -49,6 +49,12 @@ static int init_downstream(struct sr_config_s *config) {
         log_msg(ERROR, "%s: health client malloc() failed %s", __func__, strerror(errno));
         return 1;
     }
+    config->thread_config = (struct thread_config_s *)malloc(sizeof(struct thread_config_s) * config->threads_num);
+    if (config->thread_config == NULL) {
+        log_msg(ERROR, "%s: config.thread_config malloc() failed %s", __func__, strerror(errno));
+        return(1);
+    }
+
     strcpy(per_connection_prefix, config->alive_downstream_metric_name);
     for (i = strlen(per_connection_prefix); i > 0; i--) {
         if (per_connection_prefix[i] == '.') {

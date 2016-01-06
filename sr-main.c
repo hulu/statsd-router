@@ -232,17 +232,18 @@ void ping_cb(struct ev_loop *loop, struct ev_periodic *p, int revents) {
 
 void *data_pipe_thread(void *args) {
     struct sockaddr_in addr;
-    struct ev_loop *loop = NULL;
-    struct ev_io_ds_s *socket_watcher = (struct ev_io_ds_s *)args;
+    struct ev_loop *loop = ev_loop_new(0);
+    struct thread_config_s *thread_config = (struct thread_config_s *)args;
+    struct ev_io_ds_s socket_watcher;
     struct ev_periodic_ds_s ds_flush_timer_watcher;
     struct ev_periodic_ds_s ping_timer_watcher;
     ev_tstamp ds_flush_timer_at = 0.0;
     ev_tstamp ping_timer_at = 0.0;
     int optval = 1;
     int socket_in = -1;
-    ev_tstamp downstream_flush_interval = socket_watcher->common->downstream_flush_interval;
-    int downstream_num = socket_watcher->downstream_num;
-    struct downstream_s *downstream = socket_watcher->downstream;
+    ev_tstamp downstream_flush_interval = thread_config->common->downstream_flush_interval;
+    int downstream_num = thread_config->common->downstream_num;
+    struct downstream_s *downstream = thread_config->common->downstream + thread_config->id;
     int i = 0;
 
     socket_in = socket(PF_INET, SOCK_DGRAM, 0);
@@ -252,7 +253,7 @@ void *data_pipe_thread(void *args) {
     }
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(socket_watcher->common->data_port);
+    addr.sin_port = htons(thread_config->common->data_port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
     if (setsockopt(socket_in, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)) != 0) {
@@ -265,17 +266,18 @@ void *data_pipe_thread(void *args) {
         return NULL;
     }
 
-    socket_watcher->socket_out = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (socket_watcher->socket_out < 0 ) {
+    socket_watcher.socket_out = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (socket_watcher.socket_out < 0 ) {
         log_msg(ERROR, "%s: socket_out socket() error %s", __func__, strerror(errno));
         return NULL;
     }
     for (i = 0; i < downstream_num; i++) {
-        (downstream + i)->socket_out = &socket_watcher->socket_out;
+        (downstream + i)->socket_out = &socket_watcher.socket_out;
     }
-    loop = ev_loop_new(0);
-    ev_io_init((struct ev_io *)socket_watcher, udp_read_cb, socket_in, EV_READ);
-    ev_io_start(loop, (struct ev_io *)socket_watcher);
+    socket_watcher.downstream_num = downstream_num;
+    socket_watcher.downstream = downstream;
+    ev_io_init((struct ev_io *)&socket_watcher, udp_read_cb, socket_in, EV_READ);
+    ev_io_start(loop, (struct ev_io *)&socket_watcher);
 
     ds_flush_timer_watcher.downstream_num = downstream_num;
     ds_flush_timer_watcher.downstream = downstream;
@@ -285,8 +287,8 @@ void *data_pipe_thread(void *args) {
 
     ping_timer_watcher.downstream_num = downstream_num;
     ping_timer_watcher.downstream = downstream;
-    ping_timer_watcher.string = socket_watcher->common->alive_downstream_metric_name;
-    ev_periodic_init((struct ev_periodic *)&ping_timer_watcher, ping_cb, ping_timer_at, socket_watcher->common->downstream_ping_interval, 0);
+    ping_timer_watcher.string = thread_config->common->alive_downstream_metric_name;
+    ev_periodic_init((struct ev_periodic *)&ping_timer_watcher, ping_cb, ping_timer_at, thread_config->common->downstream_ping_interval, 0);
     ev_periodic_start (loop, (struct ev_periodic *)&ping_timer_watcher);
 
     ev_loop(loop, 0);
@@ -334,11 +336,6 @@ int main(int argc, char *argv[]) {
         log_msg(ERROR, "%s: listen() error %s", __func__, strerror(errno));
         return(1);
     }
-    config.data_pipe = (struct ev_io_ds_s *)malloc(sizeof(struct ev_io_ds_s) * config.threads_num);
-    if (config.data_pipe == NULL) {
-        log_msg(ERROR, "%s: config.data_pipe malloc() failed %s", __func__, strerror(errno));
-        return(1);
-    }
 
     control_socket_watcher.health_response = config.health_check_response_buf;
     control_socket_watcher.health_response_len = &config.health_check_response_buf_length;
@@ -351,10 +348,9 @@ int main(int argc, char *argv[]) {
     ev_periodic_start(loop, (struct ev_periodic *)&ds_health_check_timer_watcher);
 
     for (i = 0; i < config.threads_num; i++) {
-        (config.data_pipe + i)->downstream_num = config.downstream_num;
-        (config.data_pipe + i)->downstream = config.downstream + config.downstream_num * i;
-        (config.data_pipe + i)->common = &config;
-        pthread_create(&(config.data_pipe + i)->thread, NULL, data_pipe_thread, (void *)(config.data_pipe + i));
+        (config.thread_config + i)->id = i;
+        (config.thread_config + i)->common = &config;
+        pthread_create(&(config.thread_config + i)->thread, NULL, data_pipe_thread, (void *)(config.thread_config + i));
     }
 
     ev_loop(loop, 0);

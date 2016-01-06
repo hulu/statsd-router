@@ -83,6 +83,10 @@ struct ev_io_ds_s {
     int downstream_num;
     struct downstream_s *downstream;
     int socket_out;
+};
+
+struct thread_config_s {
+    int id;
     pthread_t thread;
     struct sr_config_s *common;
 };
@@ -113,7 +117,7 @@ struct sr_config_s {
     char health_check_response_buf[HEALTH_CHECK_RESPONSE_BUF_SIZE];
     int health_check_response_buf_length;
     struct ds_health_client_s *health_client;
-    struct ev_io_ds_s *data_pipe;
+    struct thread_config_s *thread_config;
 };
 
 #endif
