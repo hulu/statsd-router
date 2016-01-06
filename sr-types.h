@@ -61,7 +61,7 @@ struct downstream_s {
     char per_downstream_counter_metric[METRIC_SIZE];
     int per_downstream_counter_metric_length;
     struct ds_health_client_s *health_client;
-    struct ev_io_ds_s *root;
+    int *socket_out;
 };
 
 struct ev_periodic_health_client_s {
@@ -83,6 +83,8 @@ struct ev_io_ds_s {
     int downstream_num;
     struct downstream_s *downstream;
     int socket_out;
+    pthread_t thread;
+    struct sr_config_s *common;
 };
 
 #define HEALTH_CHECK_REQUEST "health"
@@ -110,9 +112,8 @@ struct sr_config_s {
     char alive_downstream_metric_name[METRIC_SIZE];
     char health_check_response_buf[HEALTH_CHECK_RESPONSE_BUF_SIZE];
     int health_check_response_buf_length;
-    int id;
     struct ds_health_client_s *health_client;
-    pthread_t *thread;
+    struct ev_io_ds_s *data_pipe;
 };
 
 #endif

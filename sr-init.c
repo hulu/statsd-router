@@ -154,7 +154,7 @@ static int process_config_line(char *line, struct sr_config_s *config) {
     } else if (strcmp("threads_num", line) == 0) {
         config->threads_num = atoi(value_ptr);
     } else if (strcmp("ping_prefix", line) == 0) {
-        n = strlen(value_ptr);
+        n = strlen(value_ptr) + 1;
         config->ping_prefix = (char *)malloc(n);
         if (config->ping_prefix == NULL) {
             log_msg(ERROR, "%s: malloc() failed", __func__);
@@ -162,7 +162,7 @@ static int process_config_line(char *line, struct sr_config_s *config) {
         }
         strncpy(config->ping_prefix, value_ptr, n);
     } else if (strcmp("downstream", line) == 0) {
-        n = strlen(value_ptr);
+        n = strlen(value_ptr) + 1;
         config->downstream_str = (char *)malloc(n);
         if (config->downstream_str == NULL) {
             log_msg(ERROR, "%s: malloc() failed", __func__);

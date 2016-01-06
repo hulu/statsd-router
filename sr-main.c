@@ -66,7 +66,7 @@ void ds_schedule_flush(struct downstream_s *ds, struct ev_loop *loop) {
     ds->active_buffer_length = 0;
     ds->active_buffer_idx = new_active_buffer_idx;
     if (need_to_schedule_flush) {
-        ev_io_init(watcher, ds_flush_cb, ds->root->socket_out, EV_WRITE);
+        ev_io_init(watcher, ds_flush_cb, *ds->socket_out, EV_WRITE);
         ev_io_start(loop, watcher);
     }
 }
@@ -233,17 +233,16 @@ void ping_cb(struct ev_loop *loop, struct ev_periodic *p, int revents) {
 void *data_pipe_thread(void *args) {
     struct sockaddr_in addr;
     struct ev_loop *loop = NULL;
-    struct ev_io_ds_s socket_watcher;
+    struct ev_io_ds_s *socket_watcher = (struct ev_io_ds_s *)args;
     struct ev_periodic_ds_s ds_flush_timer_watcher;
     struct ev_periodic_ds_s ping_timer_watcher;
     ev_tstamp ds_flush_timer_at = 0.0;
     ev_tstamp ping_timer_at = 0.0;
     int optval = 1;
     int socket_in = -1;
-    struct sr_config_s *config = (struct sr_config_s *)args;
-    ev_tstamp downstream_flush_interval = config->downstream_flush_interval;
-    int downstream_num = config->downstream_num;
-    struct downstream_s *downstream = config->downstream + downstream_num * config->id;
+    ev_tstamp downstream_flush_interval = socket_watcher->common->downstream_flush_interval;
+    int downstream_num = socket_watcher->downstream_num;
+    struct downstream_s *downstream = socket_watcher->downstream;
     int i = 0;
 
     socket_in = socket(PF_INET, SOCK_DGRAM, 0);
@@ -253,7 +252,7 @@ void *data_pipe_thread(void *args) {
     }
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(config->data_port);
+    addr.sin_port = htons(socket_watcher->common->data_port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
     if (setsockopt(socket_in, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)) != 0) {
@@ -266,19 +265,17 @@ void *data_pipe_thread(void *args) {
         return NULL;
     }
 
-    socket_watcher.downstream_num = downstream_num;
-    socket_watcher.downstream = downstream;
-    socket_watcher.socket_out = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (socket_watcher.socket_out < 0 ) {
+    socket_watcher->socket_out = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (socket_watcher->socket_out < 0 ) {
         log_msg(ERROR, "%s: socket_out socket() error %s", __func__, strerror(errno));
         return NULL;
     }
     for (i = 0; i < downstream_num; i++) {
-        (downstream + i)->root = &socket_watcher;
+        (downstream + i)->socket_out = &socket_watcher->socket_out;
     }
     loop = ev_loop_new(0);
-    ev_io_init((struct ev_io *)(&socket_watcher), udp_read_cb, socket_in, EV_READ);
-    ev_io_start(loop, (struct ev_io *)(&socket_watcher));
+    ev_io_init((struct ev_io *)socket_watcher, udp_read_cb, socket_in, EV_READ);
+    ev_io_start(loop, (struct ev_io *)socket_watcher);
 
     ds_flush_timer_watcher.downstream_num = downstream_num;
     ds_flush_timer_watcher.downstream = downstream;
@@ -288,8 +285,8 @@ void *data_pipe_thread(void *args) {
 
     ping_timer_watcher.downstream_num = downstream_num;
     ping_timer_watcher.downstream = downstream;
-    ping_timer_watcher.string = config->alive_downstream_metric_name;
-    ev_periodic_init((struct ev_periodic *)&ping_timer_watcher, ping_cb, ping_timer_at, config->downstream_ping_interval, 0);
+    ping_timer_watcher.string = socket_watcher->common->alive_downstream_metric_name;
+    ev_periodic_init((struct ev_periodic *)&ping_timer_watcher, ping_cb, ping_timer_at, socket_watcher->common->downstream_ping_interval, 0);
     ev_periodic_start (loop, (struct ev_periodic *)&ping_timer_watcher);
 
     ev_loop(loop, 0);
@@ -337,9 +334,9 @@ int main(int argc, char *argv[]) {
         log_msg(ERROR, "%s: listen() error %s", __func__, strerror(errno));
         return(1);
     }
-    config.thread = (pthread_t *)malloc(sizeof(pthread_t) * config.threads_num);
-    if (config.thread == NULL) {
-        log_msg(ERROR, "%s: config.thread malloc() failed %s", __func__, strerror(errno));
+    config.data_pipe = (struct ev_io_ds_s *)malloc(sizeof(struct ev_io_ds_s) * config.threads_num);
+    if (config.data_pipe == NULL) {
+        log_msg(ERROR, "%s: config.data_pipe malloc() failed %s", __func__, strerror(errno));
         return(1);
     }
 
@@ -354,8 +351,10 @@ int main(int argc, char *argv[]) {
     ev_periodic_start(loop, (struct ev_periodic *)&ds_health_check_timer_watcher);
 
     for (i = 0; i < config.threads_num; i++) {
-        config.id = i;
-        pthread_create(config.thread + i, NULL, data_pipe_thread, (void *)(&config));
+        (config.data_pipe + i)->downstream_num = config.downstream_num;
+        (config.data_pipe + i)->downstream = config.downstream + config.downstream_num * i;
+        (config.data_pipe + i)->common = &config;
+        pthread_create(&(config.data_pipe + i)->thread, NULL, data_pipe_thread, (void *)(config.data_pipe + i));
     }
 
     ev_loop(loop, 0);
