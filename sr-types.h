@@ -86,7 +86,7 @@ struct ev_io_ds_s {
 };
 
 struct thread_config_s {
-    int id;
+    int index;
     pthread_t thread;
     struct sr_config_s *common;
 };

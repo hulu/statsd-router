@@ -243,7 +243,7 @@ void *data_pipe_thread(void *args) {
     int socket_in = -1;
     ev_tstamp downstream_flush_interval = thread_config->common->downstream_flush_interval;
     int downstream_num = thread_config->common->downstream_num;
-    struct downstream_s *downstream = thread_config->common->downstream + thread_config->id * downstream_num;
+    struct downstream_s *downstream = thread_config->common->downstream + thread_config->index * downstream_num;
     int i = 0;
 
     socket_in = socket(PF_INET, SOCK_DGRAM, 0);
@@ -348,7 +348,7 @@ int main(int argc, char *argv[]) {
     ev_periodic_start(loop, (struct ev_periodic *)&ds_health_check_timer_watcher);
 
     for (i = 0; i < config.threads_num; i++) {
-        (config.thread_config + i)->id = i;
+        (config.thread_config + i)->index = i;
         (config.thread_config + i)->common = &config;
         pthread_create(&(config.thread_config + i)->thread, NULL, data_pipe_thread, (void *)(config.thread_config + i));
     }
