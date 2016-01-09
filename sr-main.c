@@ -118,25 +118,32 @@ int find_downstream(char *line, unsigned long hash, int length, int downstream_n
 }
 
 // sdbm hashing (http://www.cse.yorku.ca/~oz/hash.html)
-unsigned long hash(char *s, int length) {
-    unsigned long h = 0;
+int hash(char *s, int length, unsigned long *result) {
     int i;
+    char c;
+    unsigned long h = 0;
+
     for (i = 0; i < length; i++) {
-        h = (h << 6) + (h << 16) - h + *(s + i);
+        c = *(s + i);
+        if (c == ':') {
+            *result = h;
+            return 0;
+        }
+        h = (h << 6) + (h << 16) - h + c;
     }
-    return h;
+    return 1;
 }
 
 // function to process single metrics line
 int process_data_line(char *line, int length, int downstream_num, struct downstream_s *downstream, struct ev_loop *loop) {
-    char *colon_ptr = memchr(line, ':', length);
+    unsigned long h = 0;
     // if ':' wasn't found this is not valid statsd metric
-    if (colon_ptr == NULL) {
+    if (hash(line, length, &h) != 0) {
         *(line + length - 1) = 0;
         log_msg(WARN, "%s: invalid metric %s", __func__, line);
         return 1;
     }
-    find_downstream(line, hash(line, (colon_ptr - line)), length, downstream_num, downstream, loop);
+    find_downstream(line, h, length, downstream_num, downstream, loop);
     return 0;
 }
 
@@ -266,13 +273,21 @@ void *data_pipe_thread(void *args) {
         return NULL;
     }
 
-    socket_watcher.socket_out = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (socket_watcher.socket_out < 0 ) {
-        log_msg(ERROR, "%s: socket_out socket() error %s", __func__, strerror(errno));
+    thread_config->socket_in = socket_in;
+    thread_config->socket_out = (int *)malloc(thread_config->common->socket_out_num * sizeof(int));
+    if (thread_config->socket_out == NULL) {
+        log_msg(ERROR, "%s: malloc() failed %s", __func__, strerror(errno));
         return NULL;
     }
+    for (i = 0; i < thread_config->common->socket_out_num; i++) {
+        *(thread_config->socket_out + i) = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (*(thread_config->socket_out + i) < 0 ) {
+            log_msg(ERROR, "%s: socket_out socket() error %s", __func__, strerror(errno));
+            return NULL;
+        }
+    }
     for (i = 0; i < downstream_num; i++) {
-        (downstream + i)->socket_out = &socket_watcher.socket_out;
+        (downstream + i)->socket_out = thread_config->socket_out + (i % thread_config->common->socket_out_num);
     }
     socket_watcher.downstream_num = downstream_num;
     socket_watcher.downstream = downstream;
@@ -337,6 +352,8 @@ int main(int argc, char *argv[]) {
         return(1);
     }
 
+
+    config.control_socket = control_socket;
     control_socket_watcher.health_response = config.health_check_response_buf;
     control_socket_watcher.health_response_len = &config.health_check_response_buf_length;
     ev_io_init((struct ev_io *)&control_socket_watcher, control_accept_cb, control_socket, EV_READ);

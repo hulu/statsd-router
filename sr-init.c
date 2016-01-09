@@ -51,7 +51,7 @@ static int init_downstream(struct sr_config_s *config) {
     }
     config->thread_config = (struct thread_config_s *)malloc(sizeof(struct thread_config_s) * config->threads_num);
     if (config->thread_config == NULL) {
-        log_msg(ERROR, "%s: config.thread_config malloc() failed %s", __func__, strerror(errno));
+        log_msg(ERROR, "%s: thread_config malloc() failed %s", __func__, strerror(errno));
         return(1);
     }
 
@@ -159,6 +159,8 @@ static int process_config_line(char *line, struct sr_config_s *config) {
         log_level = atoi(value_ptr);
     } else if (strcmp("threads_num", line) == 0) {
         config->threads_num = atoi(value_ptr);
+    } else if (strcmp("socket_out_num", line) == 0) {
+        config->socket_out_num = atoi(value_ptr);
     } else if (strcmp("ping_prefix", line) == 0) {
         n = strlen(value_ptr) + 1;
         config->ping_prefix = (char *)malloc(n);
@@ -209,7 +211,11 @@ static int verify_config(struct sr_config_s *config) {
     }
     if (config->threads_num < 1) {
         failures++;
-        log_msg(ERROR, "%s: threads_num should be > 0", __func__);
+        log_msg(ERROR, "%s: threads_num should be >= 1", __func__);
+    }
+    if (config->socket_out_num < 1) {
+        failures++;
+        log_msg(ERROR, "%s: socket_out_num should be >= 1", __func__);
     }
     if (config->downstream_str == NULL) {
         failures++;
@@ -219,19 +225,35 @@ static int verify_config(struct sr_config_s *config) {
         failures++;
         log_msg(ERROR, "%s: ping_prefix is not set", __func__);
     }
-    if (config->downstream_health_check_interval < 0) {
+    if (config->downstream_health_check_interval <= 0.0) {
         failures++;
         log_msg(ERROR, "%s: downstream_health_check_interval should be > 0", __func__);
     }
-    if (config->downstream_flush_interval < 0) {
+    if (config->downstream_flush_interval <= 0.0) {
         failures++;
         log_msg(ERROR, "%s: downstream_flush_interval should be > 0", __func__);
     }
-    if (config->downstream_ping_interval < 0) {
+    if (config->downstream_ping_interval <= 0.0) {
         failures++;
         log_msg(ERROR, "%s: downstream_ping_interval should be > 0", __func__);
     }
     return failures;
+}
+
+static void cleanup(int status, void *args) {
+    struct sr_config_s *config = (struct sr_config_s *)args;
+    int i = 0;
+    int j = 0;
+    struct thread_config_s *tc;
+
+    close(config->control_socket);
+    for (i = 0; i < config->threads_num; i++) {
+        tc = config->thread_config + i;
+        close(tc->socket_in);
+        for (j = 0; j < config->socket_out_num; j++) {
+            close(*(tc->socket_out + j));
+        }
+    }
 }
 
 // this function loads config file and initializes config fields
@@ -245,10 +267,11 @@ int init_config(char *filename, struct sr_config_s *config) {
     config->data_port = 0;
     config->control_port = 0;
     log_level = 0;
-    config->downstream_health_check_interval = -1.0;
-    config->downstream_flush_interval = -1.0;
-    config->downstream_ping_interval = -1.0;
-    config->threads_num = 0;
+    config->downstream_health_check_interval = 0.0;
+    config->downstream_flush_interval = 0.0;
+    config->downstream_ping_interval = 0.0;
+    config->threads_num = 1;
+    config->socket_out_num = 1;
     config->downstream_str = NULL;
     config->ping_prefix = NULL;
 
@@ -276,6 +299,10 @@ int init_config(char *filename, struct sr_config_s *config) {
     }
     if (verify_config(config) != 0) {
         log_msg(ERROR, "%s: failed to verify config file", __func__);
+        return 1;
+    }
+    if (on_exit(cleanup, (void *)config) != 0) {
+        log_msg(ERROR, "%s: on_exit() failed", __func__);
         return 1;
     }
     if (signal(SIGHUP, on_sighup) == SIG_ERR) {

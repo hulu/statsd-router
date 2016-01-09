@@ -82,13 +82,15 @@ struct ev_io_ds_s {
     struct ev_io super;
     int downstream_num;
     struct downstream_s *downstream;
-    int socket_out;
+    int socket_in;
 };
 
 struct thread_config_s {
     int index;
     pthread_t thread;
     struct sr_config_s *common;
+    int socket_in;
+    int *socket_out;
 };
 
 #define HEALTH_CHECK_REQUEST "health"
@@ -110,6 +112,7 @@ struct sr_config_s {
     ev_tstamp downstream_ping_interval;
     // how many concurrent threads we run
     int threads_num;
+    int socket_out_num;
     char *ping_prefix;
     int downstream_num;
     struct downstream_s *downstream;
@@ -118,6 +121,7 @@ struct sr_config_s {
     int health_check_response_buf_length;
     struct ds_health_client_s *health_client;
     struct thread_config_s *thread_config;
+    int control_socket;
 };
 
 #endif
