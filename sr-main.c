@@ -246,7 +246,6 @@ void *data_pipe_thread(void *args) {
     struct ev_periodic_ds_s ping_timer_watcher;
     ev_tstamp ds_flush_timer_at = 0.0;
     ev_tstamp ping_timer_at = 0.0;
-    int optval = 1;
     int socket_in = -1;
     ev_tstamp downstream_flush_interval = thread_config->common->downstream_flush_interval;
     int downstream_num = thread_config->common->downstream_num;
@@ -260,13 +259,8 @@ void *data_pipe_thread(void *args) {
     }
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(thread_config->common->data_port);
+    addr.sin_port = htons(thread_config->common->data_port + thread_config->index);
     addr.sin_addr.s_addr = INADDR_ANY;
-
-    if (setsockopt(socket_in, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)) != 0) {
-        log_msg(ERROR, "%s: setsockopt() failed %s", __func__, strerror(errno));
-        return NULL;
-    }
 
     if (bind(socket_in, (struct sockaddr*) &addr, sizeof(addr)) != 0) {
         log_msg(ERROR, "%s: bind() failed %s", __func__, strerror(errno));
