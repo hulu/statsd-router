@@ -19,11 +19,11 @@ $(EXECUTABLE): $(OBJECTS)
 	$(CC) $(CFLAGS) $< -o $@
 clean:
 	rm -rf statsd-router *.o build
-pkg: bin
+pkg: all
 	mkdir -p build/usr/local/bin/
 	cp statsd-router build/usr/local/bin/
 	cd build && \
-	fpm --deb-user root --deb-group root -d libev-dev --description $(PKG_DESCRIPTION) -s dir -t deb -v $(PKG_VERSION) -n $(PKG_NAME) `find usr -type f` && \
+	fpm --deb-no-default-config-files --deb-user root --deb-group root -d libev-dev --description $(PKG_DESCRIPTION) -s dir -t deb -v $(PKG_VERSION) -n $(PKG_NAME) `find usr -type f` && \
 	rm -rf `ls|grep -v deb$$`
 test:
 	cd test && ./run-all-tests.sh
