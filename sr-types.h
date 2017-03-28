@@ -91,6 +91,7 @@ struct thread_config_s {
     struct sr_config_s *common;
     int socket_in;
     int *socket_out;
+    char alive_downstream_metric_name[METRIC_SIZE];
 };
 
 #define HEALTH_CHECK_REQUEST "health"
@@ -116,7 +117,6 @@ struct sr_config_s {
     char *ping_prefix;
     int downstream_num;
     struct downstream_s *downstream;
-    char alive_downstream_metric_name[METRIC_SIZE];
     char health_check_response_buf[HEALTH_CHECK_RESPONSE_BUF_SIZE];
     int health_check_response_buf_length;
     struct ds_health_client_s *health_client;

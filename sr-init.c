@@ -17,7 +17,7 @@ static int init_sockaddr_in(struct sockaddr_in *sa_in, char *host, char *port) {
 }
 
 // function to init downstreams from config file line
-static int init_downstream(struct sr_config_s *config) {
+static int init_downstream(struct sr_config_s *config, char *hostname) {
     int i = 0;
     int j = 0;
     int k = 0;
@@ -26,8 +26,6 @@ static int init_downstream(struct sr_config_s *config) {
     char *next_host = NULL;
     char *data_port = NULL;
     char *health_port = NULL;
-    char per_connection_prefix[METRIC_SIZE];
-    char per_downstream_prefix[METRIC_SIZE];
     char metric_host_name[METRIC_SIZE];
     struct downstream_s *ds;
 
@@ -54,21 +52,10 @@ static int init_downstream(struct sr_config_s *config) {
         log_msg(ERROR, "%s: thread_config malloc() failed %s", __func__, strerror(errno));
         return(1);
     }
+    for (k = 0; k < config->threads_num; k++) {
+        sprintf((config->thread_config + k)->alive_downstream_metric_name, "%s.%s-%d.%s", config->ping_prefix, hostname, (config->data_port) + k, HEALTHY_DOWNSTREAMS);
+    }
 
-    strcpy(per_connection_prefix, config->alive_downstream_metric_name);
-    for (i = strlen(per_connection_prefix); i > 0; i--) {
-        if (per_connection_prefix[i] == '.') {
-            per_connection_prefix[i] = 0;
-            break;
-        }
-    }
-    strcpy(per_downstream_prefix, per_connection_prefix);
-    for (i = strlen(per_downstream_prefix); i > 0; i--) {
-        if (per_downstream_prefix[i] == '.') {
-            per_downstream_prefix[i] = 0;
-            break;
-        }
-    }
     // now let's initialize downstreams and health clients
     for (i = 0; i < config->downstream_num; i++) {
         if (host == NULL) {
@@ -122,13 +109,13 @@ static int init_downstream(struct sr_config_s *config) {
             if (init_sockaddr_in(&(ds->sa_in_data), host, data_port) != 0) {
                 return 1;
             }
-            ds->per_downstream_counter_metric_length = sprintf(ds->per_downstream_counter_metric, "%s-%s-%s.%s\n%s.%s-%s.%s\n",
-                per_connection_prefix, metric_host_name, data_port, PER_DOWNSTREAM_COUNTER_METRIC_SUFFIX,
-                per_downstream_prefix, metric_host_name, data_port, PER_DOWNSTREAM_COUNTER_METRIC_SUFFIX);
+            ds->per_downstream_counter_metric_length = sprintf(ds->per_downstream_counter_metric, "%s.%s-%d-%s-%s.%s\n%s.%s-%s.%s\n",
+                config->ping_prefix, hostname, (config->data_port) + k, metric_host_name, data_port, PER_DOWNSTREAM_COUNTER_METRIC_SUFFIX,
+                config->ping_prefix, metric_host_name, data_port, PER_DOWNSTREAM_COUNTER_METRIC_SUFFIX);
             sprintf(ds->downstream_packet_counter_metric, "%s.%s-%s.%s",
-                per_downstream_prefix, metric_host_name, data_port, DOWNSTREAM_PACKET_COUNTER);
+                config->ping_prefix, metric_host_name, data_port, DOWNSTREAM_PACKET_COUNTER);
             sprintf(ds->downstream_traffic_counter_metric, "%s.%s-%s.%s",
-                per_downstream_prefix, metric_host_name, data_port, DOWNSTREAM_TRAFFIC_COUNTER);
+                config->ping_prefix, metric_host_name, data_port, DOWNSTREAM_TRAFFIC_COUNTER);
         }
         host = next_host;
     }
@@ -318,8 +305,7 @@ int init_config(char *filename, struct sr_config_s *config) {
         log_msg(ERROR, "%s: gethostname() failed", __func__);
         return 1;
     }
-    sprintf(config->alive_downstream_metric_name, "%s.%s-%d.%s", config->ping_prefix, hostname, config->data_port, HEALTHY_DOWNSTREAMS);
-    if (init_downstream(config) != 0) {
+    if (init_downstream(config, hostname) != 0) {
         log_msg(ERROR, "%s: init_downstream() failed", __func__);
         return 1;
     }

@@ -296,7 +296,7 @@ void *data_pipe_thread(void *args) {
 
     ping_timer_watcher.downstream_num = downstream_num;
     ping_timer_watcher.downstream = downstream;
-    ping_timer_watcher.string = thread_config->common->alive_downstream_metric_name;
+    ping_timer_watcher.string = thread_config->alive_downstream_metric_name;
     ev_periodic_init((struct ev_periodic *)&ping_timer_watcher, ping_cb, ping_timer_at, thread_config->common->downstream_ping_interval, 0);
     ev_periodic_start (loop, (struct ev_periodic *)&ping_timer_watcher);
 

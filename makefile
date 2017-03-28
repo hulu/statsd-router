@@ -1,5 +1,5 @@
 PKG_NAME=hulu-statsd-router
-PKG_VERSION=0.0.12
+PKG_VERSION=0.0.13
 PKG_DESCRIPTION="Metrics router for statsd cluster"
 
 CC=gcc
