@@ -23,8 +23,22 @@ Statsd-router does the following:
 4. check health status of underlying statsd instances to eliminate dead ones
    from consistent hashing
 
-Statsd-router is implemented using the libev library. It is a single-threaded
-application built using non-blocking IO.
+Statsd-router is implemented using the libev library and uses non-blocking IO.
+
+Configuration file.
+
+Following configuration parameters are supported:
+
+data_port - base udp port to accept incoming data. Thread 0 will use data_port, thread 1 will use data_port + 1 etc.
+control_port - tcp port for health check
+downstream_flush_interval - how often we flush data to the downstreams, seconds
+downstream_health_check_interval - how often we check downstream health, seconds
+downstream_ping_interval - how often we send ping metrics
+ping_prefix - prefix used for the ping metrics
+downstream - comma separated list of the downstreams. Each downstream has format address:data_port:health_port
+log_level - 0: TRACE, 1: DEBUG, 2: INFO, 3: WARN, 4: ERROR
+threads_num - how many threads will be used
+socket_out_num - how many outgoing sockets we use for the downstreams
 
 Testing.
 

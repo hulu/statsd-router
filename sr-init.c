@@ -147,6 +147,9 @@ static int process_config_line(char *line, struct sr_config_s *config) {
     } else if (strcmp("threads_num", line) == 0) {
         config->threads_num = atoi(value_ptr);
     } else if (strcmp("socket_out_num", line) == 0) {
+        // TODO socket_out_num parameter is used to have multiple outgoing sockets for the downstreams
+        // TODO we can't create as many sockets as we want because we can run out of file handles
+        // TODO instead of using this parameter getrlimit() should be used to create optimal number of outgoing sockets
         config->socket_out_num = atoi(value_ptr);
     } else if (strcmp("ping_prefix", line) == 0) {
         n = strlen(value_ptr) + 1;
