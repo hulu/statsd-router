@@ -38,7 +38,6 @@ ping_prefix - prefix used for the ping metrics
 downstream - comma separated list of the downstreams. Each downstream has format address:data_port:health_port
 log_level - 0: TRACE, 1: DEBUG, 2: INFO, 3: WARN, 4: ERROR
 threads_num - how many threads will be used
-socket_out_num - how many outgoing sockets we use for the downstreams
 
 Testing.
 

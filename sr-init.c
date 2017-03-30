@@ -1,4 +1,5 @@
 #include "sr-main.h"
+#include <sys/resource.h>
 
 #define HOST_NAME_SIZE 64
 
@@ -146,11 +147,10 @@ static int process_config_line(char *line, struct sr_config_s *config) {
         log_level = atoi(value_ptr);
     } else if (strcmp("threads_num", line) == 0) {
         config->threads_num = atoi(value_ptr);
-    } else if (strcmp("socket_out_num", line) == 0) {
-        // TODO socket_out_num parameter is used to have multiple outgoing sockets for the downstreams
-        // TODO we can't create as many sockets as we want because we can run out of file handles
-        // TODO instead of using this parameter getrlimit() should be used to create optimal number of outgoing sockets
-        config->socket_out_num = atoi(value_ptr);
+        if (config->threads_num < 1) {
+            log_msg(ERROR, "%s: threads_num should be >= 1", __func__);
+            return 1;
+        }
     } else if (strcmp("ping_prefix", line) == 0) {
         n = strlen(value_ptr) + 1;
         config->ping_prefix = (char *)malloc(n);
@@ -199,14 +199,6 @@ static int verify_config(struct sr_config_s *config) {
         failures++;
         log_msg(ERROR, "%s: log_level should be in the %d-%d range", __func__, TRACE, ERROR);
     }
-    if (config->threads_num < 1) {
-        failures++;
-        log_msg(ERROR, "%s: threads_num should be >= 1", __func__);
-    }
-    if (config->socket_out_num < 1) {
-        failures++;
-        log_msg(ERROR, "%s: socket_out_num should be >= 1", __func__);
-    }
     if (config->downstream_str == NULL) {
         failures++;
         log_msg(ERROR, "%s: downstream is not set", __func__);
@@ -253,6 +245,8 @@ int init_config(char *filename, struct sr_config_s *config) {
     int failures = 0;
     char *buffer;
     char hostname[HOST_NAME_SIZE];
+    struct rlimit rlim;
+    int socket_out_num = 0;
 
     config->data_port = 0;
     config->control_port = 0;
@@ -261,7 +255,6 @@ int init_config(char *filename, struct sr_config_s *config) {
     config->downstream_flush_interval = 0.0;
     config->downstream_ping_interval = 0.0;
     config->threads_num = 1;
-    config->socket_out_num = 1;
     config->downstream_str = NULL;
     config->ping_prefix = NULL;
 
@@ -311,6 +304,26 @@ int init_config(char *filename, struct sr_config_s *config) {
     if (init_downstream(config, hostname) != 0) {
         log_msg(ERROR, "%s: init_downstream() failed", __func__);
         return 1;
+    }
+    if (getrlimit(RLIMIT_NOFILE, &rlim) != 0) {
+        log_msg(ERROR, "%s: getrlimit() failed", __func__);
+        return 1;
+    }
+    // how many file handlers we can allocate per thread for downstreams? Here is what is used:
+    // 3 - stdin, stdout, stderr
+    // 1 - health server per statsd instance
+    // config->downstream_num - connections to the downstream health ports per thread
+    // 1 - incoming connections per thread
+    // let's calculate how much will be left
+    socket_out_num = ((int)rlim.rlim_cur - 3 - 1 - (config->downstream_num + 1) * config->threads_num) / config->threads_num;
+    if (socket_out_num < 1) {
+        log_msg(ERROR, "%s: socket_out_num should be >= 1", __func__);
+        return 1;
+    }
+    if (socket_out_num > config->downstream_num) {
+        config->socket_out_num = config->downstream_num;
+    } else {
+        config->socket_out_num = socket_out_num;
     }
     strncpy(config->health_check_response_buf, HEALTH_CHECK_UP_RESPONSE, STRLEN(HEALTH_CHECK_UP_RESPONSE));
     config->health_check_response_buf_length = STRLEN(HEALTH_CHECK_UP_RESPONSE);
