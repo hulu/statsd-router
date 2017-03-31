@@ -311,11 +311,11 @@ int init_config(char *filename, struct sr_config_s *config) {
     }
     // how many file handlers we can allocate per thread for downstreams? Here is what is used:
     // 3 - stdin, stdout, stderr
-    // 1 - health server per statsd instance
-    // config->downstream_num - connections to the downstream health ports per thread
+    // 1 - health server per statsd-router instance
+    // config->downstream_num - connections to the downstream health ports per statsd-router instance
     // 1 - incoming connections per thread
     // let's calculate how much will be left
-    socket_out_num = ((int)rlim.rlim_cur - 3 - 1 - (config->downstream_num + 1) * config->threads_num) / config->threads_num;
+    socket_out_num = ((int)rlim.rlim_cur - 3 - 1 - (config->downstream_num) - (config->threads_num)) / config->threads_num;
     if (socket_out_num < 1) {
         log_msg(ERROR, "%s: socket_out_num should be >= 1", __func__);
         return 1;
@@ -324,6 +324,7 @@ int init_config(char *filename, struct sr_config_s *config) {
         config->socket_out_num = config->downstream_num;
     } else {
         config->socket_out_num = socket_out_num;
+        log_msg(WARN, "%s: %d downstreams are present but only %d free file handles, some downstreams will share outgoing sockets", __func__, config->downstream_num, config->socket_out_num);
     }
     strncpy(config->health_check_response_buf, HEALTH_CHECK_UP_RESPONSE, STRLEN(HEALTH_CHECK_UP_RESPONSE));
     config->health_check_response_buf_length = STRLEN(HEALTH_CHECK_UP_RESPONSE);
