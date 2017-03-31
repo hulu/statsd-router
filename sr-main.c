@@ -262,6 +262,16 @@ void *data_pipe_thread(void *args) {
     addr.sin_port = htons(thread_config->common->data_port + thread_config->index);
     addr.sin_addr.s_addr = INADDR_ANY;
 
+    // TODO currently each thread listens on it's own port
+    // TODO in theory all threads can use shared port using following code:
+    // int optval = 1;
+    // if (setsockopt(socket_in, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)) != 0) {
+    //     log_msg(ERROR, "%s: setsockopt() failed %s", __func__, strerror(errno));
+    //     return NULL;
+    // }
+    // TODO unfortunately last time I tried this I saw very uneven load distribution across threads
+    // TODO need to try this again in the future
+
     if (bind(socket_in, (struct sockaddr*) &addr, sizeof(addr)) != 0) {
         log_msg(ERROR, "%s: bind() failed %s", __func__, strerror(errno));
         return NULL;
