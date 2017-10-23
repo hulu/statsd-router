@@ -251,6 +251,7 @@ void *data_pipe_thread(void *args) {
     int downstream_num = thread_config->common->downstream_num;
     struct downstream_s *downstream = thread_config->common->downstream + thread_config->index * downstream_num;
     int i = 0;
+    int optval = 1;
 
     socket_in = socket(PF_INET, SOCK_DGRAM, 0);
     if (socket_in < 0 ) {
@@ -259,18 +260,13 @@ void *data_pipe_thread(void *args) {
     }
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(thread_config->common->data_port + thread_config->index);
+    addr.sin_port = htons(thread_config->common->data_port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
-    // TODO currently each thread listens on it's own port
-    // TODO in theory all threads can use shared port using following code:
-    // int optval = 1;
-    // if (setsockopt(socket_in, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)) != 0) {
-    //     log_msg(ERROR, "%s: setsockopt() failed %s", __func__, strerror(errno));
-    //     return NULL;
-    // }
-    // TODO unfortunately last time I tried this I saw very uneven load distribution across threads
-    // TODO need to try this again in the future
+    if (setsockopt(socket_in, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)) != 0) {
+        log_msg(ERROR, "%s: setsockopt() failed %s", __func__, strerror(errno));
+        return NULL;
+    }
 
     if (bind(socket_in, (struct sockaddr*) &addr, sizeof(addr)) != 0) {
         log_msg(ERROR, "%s: bind() failed %s", __func__, strerror(errno));

@@ -284,8 +284,7 @@ class StatsdRouterTest
             event_list << x[:event]
         end
         @expected_events << event_list
-        @data_socket.send(data.join("\n") + "\n", 0, '127.0.0.1', SR_DATA_PORT + @port_index)
-        @port_index = (@port_index + 1) % THREADS_NUM
+        @data_socket.send(data.join("\n") + "\n", 0, '127.0.0.1', SR_DATA_PORT)
     end
 
     # this function runs actual test
@@ -305,7 +304,6 @@ class StatsdRouterTest
             f.puts("threads_num=#{THREADS_NUM}")
             f.puts("downstream=#{(0...DOWNSTREAM_NUM).to_a.map {|x| BASE_DS_PORT + 2 * x}.map {|x| "127.0.0.1:#{x}:#{x + 1}"}.join(',')}")
         end
-        @port_index = 0
         @downstream = []
         # socket for sending data
         @data_socket = UDPSocket.new
