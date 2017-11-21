@@ -347,7 +347,7 @@ int main(int argc, char *argv[]) {
     }
 
     setsockopt(control_socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
-    if (listen(control_socket, 5) < 0) {
+    if (listen(control_socket, 4096) < 0) {
         log_msg(ERROR, "%s: listen() error %s", __func__, strerror(errno));
         return(1);
     }
