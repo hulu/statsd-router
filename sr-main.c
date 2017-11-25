@@ -297,7 +297,8 @@ void *data_pipe_thread(void *args) {
     ds_flush_timer_watcher.downstream_num = downstream_num;
     ds_flush_timer_watcher.downstream = downstream;
     ds_flush_timer_watcher.interval = downstream_flush_interval;
-    ev_periodic_init ((struct ev_periodic *)(&ds_flush_timer_watcher), ds_flush_timer_cb, ds_flush_timer_at, downstream_flush_interval, 0);
+    // downstream_flush_interval / 100.0 is used to have less fluctuations in the data
+    ev_periodic_init ((struct ev_periodic *)(&ds_flush_timer_watcher), ds_flush_timer_cb, ds_flush_timer_at, downstream_flush_interval / 100.0, 0);
     ev_periodic_start (loop, (struct ev_periodic *)(&ds_flush_timer_watcher));
 
     ping_timer_watcher.downstream_num = downstream_num;
