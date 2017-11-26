@@ -194,13 +194,11 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
 // this function cycles through downstreams and flushes them on scheduled basis
 void ds_flush_timer_cb(struct ev_loop *loop, struct ev_periodic *p, int revents) {
     int i;
-    ev_tstamp now = ev_now(loop);
     struct downstream_s *downstream = ((struct ev_periodic_ds_s *)p)->downstream;
     int downstream_num = ((struct ev_periodic_ds_s *)p)->downstream_num;
 
     for (i = 0; i < downstream_num; i++) {
-        if (now - (downstream + i)->last_flush_time > ((struct ev_periodic_ds_s *)p)->interval &&
-                (downstream + i)->active_buffer_length > 0) {
+        if ((downstream + i)->active_buffer_length > 0) {
             ds_schedule_flush(downstream + i, loop);
         }
     }
@@ -296,9 +294,7 @@ void *data_pipe_thread(void *args) {
 
     ds_flush_timer_watcher.downstream_num = downstream_num;
     ds_flush_timer_watcher.downstream = downstream;
-    ds_flush_timer_watcher.interval = downstream_flush_interval;
-    // downstream_flush_interval / 100.0 is used to have less fluctuations in the data
-    ev_periodic_init ((struct ev_periodic *)(&ds_flush_timer_watcher), ds_flush_timer_cb, ds_flush_timer_at, downstream_flush_interval / 100.0, 0);
+    ev_periodic_init ((struct ev_periodic *)(&ds_flush_timer_watcher), ds_flush_timer_cb, ds_flush_timer_at, downstream_flush_interval, 0);
     ev_periodic_start (loop, (struct ev_periodic *)(&ds_flush_timer_watcher));
 
     ping_timer_watcher.downstream_num = downstream_num;

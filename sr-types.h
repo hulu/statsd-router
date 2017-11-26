@@ -74,7 +74,6 @@ struct ev_periodic_ds_s {
     struct ev_periodic super;
     int downstream_num;
     struct downstream_s *downstream;
-    ev_tstamp interval;
     char *string;
 };
 
