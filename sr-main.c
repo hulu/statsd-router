@@ -35,7 +35,6 @@ void ds_flush_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
         (struct sockaddr *)&(ds->sa_in_data),
         sizeof(ds->sa_in_data));
     // update flush time
-    ds->last_flush_time = ev_now(loop);
     ds->buffer_length[flush_buffer_idx] = 0;
     ds->flush_buffer_idx = (flush_buffer_idx + 1) % DOWNSTREAM_BUF_NUM;
     if (ds->flush_buffer_idx == ds->active_buffer_idx) {

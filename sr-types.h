@@ -47,8 +47,6 @@ struct downstream_s {
     int buffer_length[DOWNSTREAM_BUF_NUM];
     // sockaddr for data
     struct sockaddr_in sa_in_data;
-    // last time data was flushed to downstream
-    ev_tstamp last_flush_time;
     // metrics to detect downstreams with highest traffic
     char downstream_traffic_counter_metric[METRIC_SIZE];
     int downstream_traffic_counter;
