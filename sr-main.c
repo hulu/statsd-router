@@ -35,7 +35,6 @@ void ds_flush_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
         (struct sockaddr *)&(ds->sa_in_data),
         sizeof(ds->sa_in_data));
     // update flush time
-    ds->last_flush_time = ev_now(loop);
     ds->buffer_length[flush_buffer_idx] = 0;
     ds->flush_buffer_idx = (flush_buffer_idx + 1) % DOWNSTREAM_BUF_NUM;
     if (ds->flush_buffer_idx == ds->active_buffer_idx) {
@@ -194,13 +193,11 @@ void udp_read_cb(struct ev_loop *loop, struct ev_io *watcher, int revents) {
 // this function cycles through downstreams and flushes them on scheduled basis
 void ds_flush_timer_cb(struct ev_loop *loop, struct ev_periodic *p, int revents) {
     int i;
-    ev_tstamp now = ev_now(loop);
     struct downstream_s *downstream = ((struct ev_periodic_ds_s *)p)->downstream;
     int downstream_num = ((struct ev_periodic_ds_s *)p)->downstream_num;
 
     for (i = 0; i < downstream_num; i++) {
-        if (now - (downstream + i)->last_flush_time > ((struct ev_periodic_ds_s *)p)->interval &&
-                (downstream + i)->active_buffer_length > 0) {
+        if ((downstream + i)->active_buffer_length > 0) {
             ds_schedule_flush(downstream + i, loop);
         }
     }
@@ -251,6 +248,7 @@ void *data_pipe_thread(void *args) {
     int downstream_num = thread_config->common->downstream_num;
     struct downstream_s *downstream = thread_config->common->downstream + thread_config->index * downstream_num;
     int i = 0;
+    int optval = 1;
 
     socket_in = socket(PF_INET, SOCK_DGRAM, 0);
     if (socket_in < 0 ) {
@@ -259,18 +257,13 @@ void *data_pipe_thread(void *args) {
     }
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(thread_config->common->data_port + thread_config->index);
+    addr.sin_port = htons(thread_config->common->data_port);
     addr.sin_addr.s_addr = INADDR_ANY;
 
-    // TODO currently each thread listens on it's own port
-    // TODO in theory all threads can use shared port using following code:
-    // int optval = 1;
-    // if (setsockopt(socket_in, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)) != 0) {
-    //     log_msg(ERROR, "%s: setsockopt() failed %s", __func__, strerror(errno));
-    //     return NULL;
-    // }
-    // TODO unfortunately last time I tried this I saw very uneven load distribution across threads
-    // TODO need to try this again in the future
+    if (setsockopt(socket_in, SOL_SOCKET, SO_REUSEPORT, &optval, sizeof(optval)) != 0) {
+        log_msg(ERROR, "%s: setsockopt() failed %s", __func__, strerror(errno));
+        return NULL;
+    }
 
     if (bind(socket_in, (struct sockaddr*) &addr, sizeof(addr)) != 0) {
         log_msg(ERROR, "%s: bind() failed %s", __func__, strerror(errno));
@@ -300,7 +293,6 @@ void *data_pipe_thread(void *args) {
 
     ds_flush_timer_watcher.downstream_num = downstream_num;
     ds_flush_timer_watcher.downstream = downstream;
-    ds_flush_timer_watcher.interval = downstream_flush_interval;
     ev_periodic_init ((struct ev_periodic *)(&ds_flush_timer_watcher), ds_flush_timer_cb, ds_flush_timer_at, downstream_flush_interval, 0);
     ev_periodic_start (loop, (struct ev_periodic *)(&ds_flush_timer_watcher));
 
@@ -351,7 +343,7 @@ int main(int argc, char *argv[]) {
     }
 
     setsockopt(control_socket, SOL_SOCKET, SO_REUSEADDR, &optval, sizeof(optval));
-    if (listen(control_socket, 5) < 0) {
+    if (listen(control_socket, 4096) < 0) {
         log_msg(ERROR, "%s: listen() error %s", __func__, strerror(errno));
         return(1);
     }
